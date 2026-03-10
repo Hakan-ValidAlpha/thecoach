@@ -25,6 +25,14 @@ export default function SettingsPage() {
   const [garminPassword, setGarminPassword] = useState("");
   const [withingsClientId, setWithingsClientId] = useState("");
   const [withingsClientSecret, setWithingsClientSecret] = useState("");
+  // Profile state
+  const [userName, setUserName] = useState("");
+  const [age, setAge] = useState("");
+  const [runningExperience, setRunningExperience] = useState("");
+  const [primaryGoal, setPrimaryGoal] = useState("");
+  const [goalRace, setGoalRace] = useState("");
+  const [goalRaceDate, setGoalRaceDate] = useState("");
+  const [injuriesNotes, setInjuriesNotes] = useState("");
 
   useEffect(() => {
     api
@@ -34,6 +42,13 @@ export default function SettingsPage() {
         setHeightCm(s.height_cm?.toString() || "");
         setGarminEmail(s.garmin_email || "");
         setWithingsClientId(s.withings_client_id || "");
+        setUserName(s.user_name || "");
+        setAge(s.age?.toString() || "");
+        setRunningExperience(s.running_experience || "");
+        setPrimaryGoal(s.primary_goal || "");
+        setGoalRace(s.goal_race || "");
+        setGoalRaceDate(s.goal_race_date || "");
+        setInjuriesNotes(s.injuries_notes || "");
       })
       .catch(() => setMessage({ type: "error", text: "Failed to load settings" }))
       .finally(() => setLoading(false));
@@ -104,33 +119,120 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {/* Personal Info */}
+        {/* Profile & Goals */}
         <Card>
           <CardHeader>
-            <CardTitle>Personal Info</CardTitle>
-            <CardDescription>Used for BMI calculation and other metrics</CardDescription>
+            <CardTitle>Profile & Goals</CardTitle>
+            <CardDescription>Your coach uses this to personalize advice and track your journey</CardDescription>
           </CardHeader>
           <CardContent>
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                handleSave("Personal info", {
+                handleSave("Profile", {
+                  user_name: userName || null,
+                  age: age ? parseInt(age) : null,
                   height_cm: heightCm ? parseFloat(heightCm) : null,
+                  running_experience: runningExperience || null,
+                  primary_goal: primaryGoal || null,
+                  goal_race: goalRace || null,
+                  goal_race_date: goalRaceDate || null,
+                  injuries_notes: injuriesNotes || null,
                 });
               }}
               className="space-y-4"
             >
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Name</label>
+                  <input
+                    type="text"
+                    value={userName}
+                    onChange={(e) => setUserName(e.target.value)}
+                    placeholder="Your first name"
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Age</label>
+                  <input
+                    type="number"
+                    min="10"
+                    max="100"
+                    value={age}
+                    onChange={(e) => setAge(e.target.value)}
+                    placeholder="e.g. 35"
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Height (cm)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="100"
+                    max="250"
+                    value={heightCm}
+                    onChange={(e) => setHeightCm(e.target.value)}
+                    placeholder="e.g. 180"
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Running Experience</label>
+                  <select
+                    value={runningExperience}
+                    onChange={(e) => setRunningExperience(e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  >
+                    <option value="">Select...</option>
+                    <option value="beginner">Beginner (0-1 years)</option>
+                    <option value="intermediate">Intermediate (1-3 years)</option>
+                    <option value="advanced">Advanced (3+ years)</option>
+                  </select>
+                </div>
+              </div>
               <div>
-                <label className="block text-sm font-medium mb-1">Height (cm)</label>
+                <label className="block text-sm font-medium mb-1">Primary Goal</label>
                 <input
-                  type="number"
-                  step="0.1"
-                  min="100"
-                  max="250"
-                  value={heightCm}
-                  onChange={(e) => setHeightCm(e.target.value)}
-                  placeholder="e.g. 180"
+                  type="text"
+                  value={primaryGoal}
+                  onChange={(e) => setPrimaryGoal(e.target.value)}
+                  placeholder="e.g. Get healthier, run a marathon"
                   className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Goal Race</label>
+                  <input
+                    type="text"
+                    value={goalRace}
+                    onChange={(e) => setGoalRace(e.target.value)}
+                    placeholder="e.g. Stockholm Marathon"
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Race Date</label>
+                  <input
+                    type="date"
+                    value={goalRaceDate}
+                    onChange={(e) => setGoalRaceDate(e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Injuries or Limitations</label>
+                <textarea
+                  value={injuriesNotes}
+                  onChange={(e) => setInjuriesNotes(e.target.value)}
+                  placeholder="Any current injuries, past injuries, or physical limitations your coach should know about"
+                  rows={2}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary resize-none"
                 />
               </div>
               <Button type="submit" size="sm" disabled={saving}>

@@ -21,3 +21,8 @@ class ConversationSummary(BaseModel):
     title: str
     last_message_at: datetime
     message_count: int
+
+
+class BriefingOut(BaseModel):
+    date: str
+    content: str

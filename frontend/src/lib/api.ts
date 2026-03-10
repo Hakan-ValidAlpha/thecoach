@@ -238,6 +238,13 @@ export interface AppSettings {
   withings_connected: boolean;
   last_garmin_sync: string | null;
   last_withings_sync: string | null;
+  user_name: string | null;
+  age: number | null;
+  running_experience: string | null;
+  primary_goal: string | null;
+  goal_race: string | null;
+  goal_race_date: string | null;
+  injuries_notes: string | null;
 }
 
 export interface SettingsUpdate {
@@ -246,6 +253,18 @@ export interface SettingsUpdate {
   garmin_password?: string | null;
   withings_client_id?: string | null;
   withings_client_secret?: string | null;
+  user_name?: string | null;
+  age?: number | null;
+  running_experience?: string | null;
+  primary_goal?: string | null;
+  goal_race?: string | null;
+  goal_race_date?: string | null;
+  injuries_notes?: string | null;
+}
+
+export interface Briefing {
+  date: string;
+  content: string;
 }
 
 // API functions
@@ -304,6 +323,8 @@ export const api = {
   getWithingsStatus: () => fetchApi<{ connected: boolean; last_sync: string | null }>("/withings/status"),
 
   syncWithings: () => fetchApi<{ status: string }>("/withings/sync", { method: "POST" }),
+
+  getBriefing: () => fetchApi<Briefing>("/coach/briefing"),
 
   getConversations: () => fetchApi<ConversationSummary[]>("/coach/conversations"),
 

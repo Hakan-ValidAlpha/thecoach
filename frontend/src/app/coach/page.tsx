@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { api, ChatMessage, ConversationSummary } from "@/lib/api";
+import { api, ChatMessage, ConversationSummary, Briefing } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 
 function formatTime(dateStr: string) {
   const d = new Date(dateStr);
@@ -43,6 +44,53 @@ function TypingIndicator() {
   );
 }
 
+function BriefingCard({ briefing, onDismiss, onAsk }: {
+  briefing: Briefing;
+  onDismiss: () => void;
+  onAsk: (question: string) => void;
+}) {
+  return (
+    <Card className="border-primary/20 bg-primary/5">
+      <CardContent className="pt-5 pb-4">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="flex items-center gap-2">
+            <span className="text-lg">🌅</span>
+            <h3 className="text-sm font-semibold">Good Morning</h3>
+          </div>
+          <button
+            onClick={onDismiss}
+            className="text-muted-foreground hover:text-foreground p-0.5 transition-colors"
+            title="Dismiss"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <p className="text-sm whitespace-pre-wrap leading-relaxed">{briefing.content}</p>
+        <div className="mt-4 flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-xs"
+            onClick={() => onAsk("Tell me more about today's workout — what should I focus on?")}
+          >
+            More about today&apos;s workout
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-xs"
+            onClick={() => onAsk("How am I progressing toward my goal?")}
+          >
+            Check my progress
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function CoachPage() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -51,6 +99,9 @@ export default function CoachPage() {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [briefing, setBriefing] = useState<Briefing | null>(null);
+  const [briefingLoading, setBriefingLoading] = useState(false);
+  const [briefingDismissed, setBriefingDismissed] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -60,6 +111,29 @@ export default function CoachPage() {
 
   useEffect(() => {
     api.getConversations().then(setConversations).catch(() => {});
+  }, []);
+
+  // Load morning briefing on mount (only once per day)
+  useEffect(() => {
+    const today = new Date().toISOString().split("T")[0];
+    const lastBriefingDate = sessionStorage.getItem("lastBriefingDate");
+    const cachedBriefing = sessionStorage.getItem("briefingContent");
+
+    if (lastBriefingDate === today && cachedBriefing) {
+      setBriefing(JSON.parse(cachedBriefing));
+      return;
+    }
+
+    setBriefingLoading(true);
+    api
+      .getBriefing()
+      .then((b) => {
+        setBriefing(b);
+        sessionStorage.setItem("lastBriefingDate", today);
+        sessionStorage.setItem("briefingContent", JSON.stringify(b));
+      })
+      .catch(() => {})
+      .finally(() => setBriefingLoading(false));
   }, []);
 
   useEffect(() => {
@@ -90,8 +164,8 @@ export default function CoachPage() {
     }
   }
 
-  async function handleSend() {
-    const text = input.trim();
+  async function handleSend(overrideText?: string) {
+    const text = (overrideText || input).trim();
     if (!text || isStreaming) return;
 
     let convId = activeConversationId;
@@ -100,7 +174,6 @@ export default function CoachPage() {
       setActiveConversationId(convId);
     }
 
-    // Add user message to UI immediately
     const userMsg: ChatMessage = {
       id: Date.now(),
       role: "user",
@@ -112,7 +185,6 @@ export default function CoachPage() {
     setIsStreaming(true);
     setStreamingText("");
 
-    // Reset textarea height
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
@@ -147,7 +219,6 @@ export default function CoachPage() {
               accumulated += data.text;
               setStreamingText(accumulated);
             } else if (data.type === "message_complete") {
-              // Replace streaming text with final message
               setMessages((prev) => [
                 ...prev,
                 {
@@ -165,7 +236,6 @@ export default function CoachPage() {
         }
       }
 
-      // Refresh conversation list
       api.getConversations().then(setConversations).catch(() => {});
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : "Failed to send message";
@@ -193,13 +263,22 @@ export default function CoachPage() {
 
   function handleTextareaInput(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setInput(e.target.value);
-    // Auto-resize
     const ta = e.target;
     ta.style.height = "auto";
     ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
   }
 
   const hasMessages = messages.length > 0 || streamingText;
+  const showBriefing = briefing && !briefingDismissed && !hasMessages;
+
+  const suggestions = [
+    "How should I approach today's workout?",
+    "Am I on track for my marathon goal?",
+    "How is my recovery looking?",
+    "Should I adjust my training this week?",
+    "What should I eat before my run today?",
+    "Am I overtraining?",
+  ];
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] -mt-6 -mx-4">
@@ -265,20 +344,47 @@ export default function CoachPage() {
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-4 py-4">
           {!hasMessages ? (
-            <div className="flex flex-col items-center justify-center h-full text-center">
-              <div className="text-4xl mb-4">💪</div>
-              <h3 className="text-lg font-semibold mb-2">Your AI Training & Health Coach</h3>
-              <p className="text-sm text-muted-foreground max-w-md">
-                Ask me about your training, recovery, sleep, body composition, or any health and fitness topic.
-                I have access to your Garmin and Withings data to give personalized advice.
-              </p>
+            <div className="flex flex-col items-center justify-center h-full text-center max-w-2xl mx-auto">
+              {/* Morning briefing */}
+              {briefingLoading && (
+                <div className="w-full mb-6">
+                  <Card className="border-primary/20 bg-primary/5">
+                    <CardContent className="pt-5 pb-4">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-lg">🌅</span>
+                        <h3 className="text-sm font-semibold">Loading your morning briefing...</h3>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="h-3 bg-muted rounded animate-pulse w-full" />
+                        <div className="h-3 bg-muted rounded animate-pulse w-5/6" />
+                        <div className="h-3 bg-muted rounded animate-pulse w-4/6" />
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+              {showBriefing && (
+                <div className="w-full mb-6">
+                  <BriefingCard
+                    briefing={briefing}
+                    onDismiss={() => setBriefingDismissed(true)}
+                    onAsk={(q) => handleSend(q)}
+                  />
+                </div>
+              )}
+
+              {!showBriefing && !briefingLoading && (
+                <>
+                  <h3 className="text-lg font-semibold mb-2">Your Personal Coach</h3>
+                  <p className="text-sm text-muted-foreground max-w-md">
+                    I know your training, recovery, and health data. Ask me anything about your
+                    running journey, and I&apos;ll give you personalized advice.
+                  </p>
+                </>
+              )}
+
               <div className="mt-6 flex flex-wrap gap-2 justify-center max-w-lg">
-                {[
-                  "How is my training going this week?",
-                  "Am I recovering well enough?",
-                  "How is my sleep quality?",
-                  "What does my body composition trend look like?",
-                ].map((suggestion) => (
+                {suggestions.map((suggestion) => (
                   <button
                     key={suggestion}
                     onClick={() => {
@@ -320,7 +426,7 @@ export default function CoachPage() {
               className="flex-1 resize-none rounded-xl border border-border bg-background px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
             />
             <Button
-              onClick={handleSend}
+              onClick={() => handleSend()}
               disabled={!input.trim() || isStreaming}
               size="sm"
               className="self-end rounded-xl px-4"

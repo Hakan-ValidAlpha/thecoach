@@ -30,6 +30,13 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
         ),
         last_garmin_sync=db_settings.last_garmin_sync if db_settings else None,
         last_withings_sync=db_settings.last_withings_sync if db_settings else None,
+        user_name=db_settings.user_name if db_settings else None,
+        age=db_settings.age if db_settings else None,
+        running_experience=db_settings.running_experience if db_settings else None,
+        primary_goal=db_settings.primary_goal if db_settings else None,
+        goal_race=db_settings.goal_race if db_settings else None,
+        goal_race_date=db_settings.goal_race_date if db_settings else None,
+        injuries_notes=db_settings.injuries_notes if db_settings else None,
     )
 
 
@@ -53,6 +60,20 @@ async def update_settings(
         db_settings.withings_client_id = update.withings_client_id
     if update.withings_client_secret is not None:
         db_settings.withings_client_secret = update.withings_client_secret
+    if update.user_name is not None:
+        db_settings.user_name = update.user_name
+    if update.age is not None:
+        db_settings.age = update.age
+    if update.running_experience is not None:
+        db_settings.running_experience = update.running_experience
+    if update.primary_goal is not None:
+        db_settings.primary_goal = update.primary_goal
+    if update.goal_race is not None:
+        db_settings.goal_race = update.goal_race
+    if update.goal_race_date is not None:
+        db_settings.goal_race_date = update.goal_race_date
+    if update.injuries_notes is not None:
+        db_settings.injuries_notes = update.injuries_notes
 
     await db.commit()
     await db.refresh(db_settings)
@@ -74,4 +95,11 @@ async def update_settings(
         ),
         last_garmin_sync=db_settings.last_garmin_sync,
         last_withings_sync=db_settings.last_withings_sync,
+        user_name=db_settings.user_name,
+        age=db_settings.age,
+        running_experience=db_settings.running_experience,
+        primary_goal=db_settings.primary_goal,
+        goal_race=db_settings.goal_race,
+        goal_race_date=db_settings.goal_race_date,
+        injuries_notes=db_settings.injuries_notes,
     )

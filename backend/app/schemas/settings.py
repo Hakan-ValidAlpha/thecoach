@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from pydantic import BaseModel
 
 
@@ -11,6 +11,14 @@ class SettingsOut(BaseModel):
     withings_connected: bool = False
     last_garmin_sync: datetime | None = None
     last_withings_sync: datetime | None = None
+    # User profile
+    user_name: str | None = None
+    age: int | None = None
+    running_experience: str | None = None
+    primary_goal: str | None = None
+    goal_race: str | None = None
+    goal_race_date: date | None = None
+    injuries_notes: str | None = None
 
 
 class SettingsUpdate(BaseModel):
@@ -19,3 +27,11 @@ class SettingsUpdate(BaseModel):
     garmin_password: str | None = None
     withings_client_id: str | None = None
     withings_client_secret: str | None = None
+    # User profile
+    user_name: str | None = None
+    age: int | None = None
+    running_experience: str | None = None
+    primary_goal: str | None = None
+    goal_race: str | None = None
+    goal_race_date: date | None = None
+    injuries_notes: str | None = None

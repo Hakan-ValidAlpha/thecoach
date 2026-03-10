@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import anthropic
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,8 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings as app_settings
 from app.database import get_db
 from app.models.chat import ChatMessage
-from app.schemas.coach import ChatRequest, ChatMessageOut, ConversationSummary
-from app.services.coach_context import build_training_context, build_system_prompt
+from app.schemas.coach import ChatRequest, ChatMessageOut, ConversationSummary, BriefingOut
+from app.services.coach_context import build_training_context, build_system_prompt, build_briefing
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,31 @@ async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(g
         await db.delete(m)
     await db.commit()
     return {"status": "deleted"}
+
+
+@router.get("/briefing", response_model=BriefingOut)
+async def get_briefing(db: AsyncSession = Depends(get_db)):
+    """Generate a personalized morning briefing."""
+    if not app_settings.anthropic_api_key:
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY not configured")
+
+    briefing_prompt = await build_briefing(db)
+    training_context = await build_training_context(db)
+    system_prompt = build_system_prompt(training_context)
+
+    client = anthropic.Anthropic(api_key=app_settings.anthropic_api_key)
+
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1024,
+        system=system_prompt,
+        messages=[{"role": "user", "content": briefing_prompt}],
+    )
+
+    content = response.content[0].text if response.content else ""
+    today = date.today()
+
+    return BriefingOut(date=today.isoformat(), content=content)
 
 
 @router.post("/chat")
