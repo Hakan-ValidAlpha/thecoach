@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.health_metric import DailyHealth
 from app.models.body_composition import BodyComposition
+from app.models.settings import Settings as DBSettings
 from app.schemas.health import DailyHealthOut, BodyCompositionOut
 
 router = APIRouter()
@@ -46,4 +47,16 @@ async def get_body_composition(
         .order_by(BodyComposition.measured_at.desc())
         .limit(limit)
     )
-    return [BodyCompositionOut.model_validate(b) for b in result.scalars().all()]
+    rows = result.scalars().all()
+
+    # Compute BMI from weight + height if available
+    db_settings = await db.get(DBSettings, 1)
+    height_m = (db_settings.height_cm / 100) if db_settings and db_settings.height_cm else None
+
+    out = []
+    for b in rows:
+        bc = BodyCompositionOut.model_validate(b)
+        if bc.bmi is None and bc.weight_kg and height_m:
+            bc.bmi = round(bc.weight_kg / (height_m ** 2), 1)
+        out.append(bc)
+    return out

@@ -11,6 +11,9 @@ class DailyHealthOut(BaseModel):
     stress_max: int | None = None
     body_battery_high: int | None = None
     body_battery_low: int | None = None
+    body_battery_current: int | None = None
+    body_battery_charged: int | None = None
+    body_battery_drained: int | None = None
     sleep_score: int | None = None
     sleep_duration_seconds: int | None = None
     deep_sleep_seconds: int | None = None

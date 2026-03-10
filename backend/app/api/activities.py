@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.activity import Activity
-from app.schemas.activity import ActivityDetailOut, ActivityOut, ActivitySummary
+from app.schemas.activity import ActivityDetailOut, ActivityOut, ActivitySummary, UpdateTrainingTypeRequest, TRAINING_TYPES
 
 router = APIRouter()
 
@@ -19,9 +19,16 @@ def _date_to_utc(d: date) -> datetime:
     return datetime.combine(d, datetime.min.time(), tzinfo=timezone.utc)
 
 
+@router.get("/activities/training-types")
+async def get_training_types():
+    """Return available training type labels."""
+    return TRAINING_TYPES
+
+
 @router.get("/activities", response_model=list[ActivityOut])
 async def list_activities(
     activity_type: Optional[str] = None,
+    training_type: Optional[str] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     limit: int = Query(default=50, le=200),
@@ -33,6 +40,10 @@ async def list_activities(
     conditions = []
     if activity_type:
         conditions.append(Activity.activity_type == activity_type)
+    if training_type == "unlabeled":
+        conditions.append(Activity.training_type.is_(None))
+    elif training_type:
+        conditions.append(Activity.training_type == training_type)
     if start_date:
         conditions.append(Activity.started_at >= _date_to_utc(start_date))
     if end_date:
@@ -114,6 +125,28 @@ async def get_activity(
     if not activity:
         raise HTTPException(status_code=404, detail="Activity not found")
     return ActivityDetailOut.model_validate(activity)
+
+
+@router.patch("/activities/{activity_id}/training-type", response_model=ActivityOut)
+async def update_training_type(
+    activity_id: int,
+    body: UpdateTrainingTypeRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Activity).where(Activity.id == activity_id)
+    )
+    activity = result.scalar_one_or_none()
+    if not activity:
+        raise HTTPException(status_code=404, detail="Activity not found")
+
+    if body.training_type is not None and body.training_type not in TRAINING_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid training type. Must be one of: {TRAINING_TYPES}")
+
+    activity.training_type = body.training_type
+    await db.commit()
+    await db.refresh(activity)
+    return ActivityOut.model_validate(activity)
 
 
 @router.get("/activities/{activity_id}/timeseries")

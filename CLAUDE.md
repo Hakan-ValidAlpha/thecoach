@@ -1,18 +1,18 @@
-# TheCoach - Personal Marathon Training Coach
+# TheCoach - Personal Training & Health Coach
 
 ## Project Overview
-A local, self-hosted training coach app for a beginner runner targeting a marathon in ~September 2027. Syncs data from Garmin (and later Withings), visualizes training/health metrics, manages a periodized marathon training plan, and provides AI coaching via Claude.
+A local, self-hosted training coach app for a beginner runner. Syncs data from Garmin (and later Withings), visualizes training/health metrics, manages a periodized training plan with bidirectional Garmin sync, and provides AI coaching via Claude.
 
 **Single user, no auth, local only.**
 
 ## Tech Stack
 | Layer | Tech |
 |-------|------|
-| Frontend | Next.js 16, TypeScript, Shadcn/ui, TailwindCSS v4, Recharts |
+| Frontend | Next.js 15, TypeScript, Shadcn/ui, TailwindCSS v4, Recharts |
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Alembic |
 | Database | PostgreSQL 16 |
-| AI | Claude Sonnet via Anthropic SDK |
-| Garmin | `garminconnect` Python lib (unofficial) |
+| AI | Claude Sonnet via Anthropic SDK (SSE streaming) |
+| Garmin | `garminconnect` Python lib (unofficial) + garth for API calls |
 | Deployment | Docker Compose (local) |
 | Python tooling | uv |
 
@@ -24,38 +24,54 @@ TheCoach/
 │   │   ├── main.py              # FastAPI app, CORS, router includes
 │   │   ├── config.py            # Pydantic Settings (env vars)
 │   │   ├── database.py          # Async SQLAlchemy engine + session
-│   │   ├── models/              # SQLAlchemy ORM models
+│   │   ├── models/
 │   │   │   ├── activity.py      # Activity + ActivitySplit
 │   │   │   ├── health_metric.py # DailyHealth
 │   │   │   ├── body_composition.py
-│   │   │   └── settings.py      # Single-row config (credentials, sync state)
-│   │   ├── schemas/             # Pydantic request/response schemas
+│   │   │   ├── settings.py      # Single-row config (credentials, height, sync state)
+│   │   │   ├── chat.py          # ChatMessage (AI coach conversations)
+│   │   │   └── training.py      # TrainingPlan, TrainingPhase, PlannedWorkout
+│   │   ├── schemas/
 │   │   │   ├── activity.py, health.py, dashboard.py, sync.py
-│   │   ├── api/                 # FastAPI route handlers
+│   │   │   ├── settings.py      # Settings CRUD (masks passwords)
+│   │   │   ├── coach.py         # Chat request/response schemas
+│   │   │   └── training.py      # Plan/phase/workout CRUD + compliance
+│   │   ├── api/
 │   │   │   ├── sync.py          # POST /api/sync/garmin, backfill, status
 │   │   │   ├── dashboard.py     # GET /api/dashboard (aggregated)
 │   │   │   ├── activities.py    # CRUD + summary
-│   │   │   └── health.py        # Daily health + body composition
+│   │   │   ├── health.py        # Daily health + body composition + BMI
+│   │   │   ├── settings.py      # GET/PUT /api/settings
+│   │   │   ├── coach.py         # AI coach SSE streaming chat
+│   │   │   ├── training.py      # Training plans/workouts CRUD, Garmin sync
+│   │   │   └── withings.py      # Withings OAuth + sync
 │   │   └── services/
-│   │       ├── garmin_sync.py   # Garmin Connect login, activity/health sync
-│   │       └── analytics.py     # Weekly mileage aggregation, health snapshot
-│   ├── alembic/                 # DB migrations
+│   │       ├── garmin_sync.py        # Garmin Connect login, activity/health sync
+│   │       ├── garmin_calendar_sync.py # Bidirectional Garmin calendar sync
+│   │       ├── analytics.py          # Weekly mileage aggregation, health snapshot
+│   │       ├── coach_context.py      # AI coach system prompt + context builder
+│   │       ├── training.py           # Auto-match workouts with activities
+│   │       └── withings_sync.py      # Withings API sync
+│   ├── alembic/                 # DB migrations (9 migration files)
 │   ├── tests/                   # Pytest tests
 │   └── pyproject.toml
 ├── frontend/
 │   ├── src/
-│   │   ├── app/                 # Next.js App Router pages
+│   │   ├── app/
 │   │   │   ├── page.tsx         # Dashboard
-│   │   │   ├── activities/      # Activities list
-│   │   │   ├── stats/           # (Phase 2 placeholder)
-│   │   │   ├── training/        # (Phase 4 placeholder)
-│   │   │   ├── coach/           # (Phase 3 placeholder)
-│   │   │   └── settings/        # (Phase 3 placeholder)
+│   │   │   ├── activities/      # Activities list + detail
+│   │   │   ├── stats/           # Stats page with charts (mileage, health, BMI)
+│   │   │   ├── training/        # Training calendar (4-week view, drag-and-drop)
+│   │   │   │   ├── page.tsx     # Main training page with calendar
+│   │   │   │   └── plans/new/   # New plan creation with phase builder
+│   │   │   ├── coach/           # AI coach chat with SSE streaming
+│   │   │   └── settings/        # Personal info, credentials management
 │   │   ├── components/
-│   │   │   ├── ui/              # Shadcn components (button, card, badge, etc.)
+│   │   │   ├── ui/              # Shadcn components
 │   │   │   ├── navbar.tsx
 │   │   │   ├── dashboard/       # health-cards, recent-activities, sync-button
-│   │   │   └── charts/          # weekly-mileage-chart
+│   │   │   ├── charts/          # weekly-mileage-chart
+│   │   │   └── training/        # week-calendar, workout-card, workout-form
 │   │   └── lib/
 │   │       ├── api.ts           # Backend API client + TypeScript types
 │   │       ├── format.ts        # Formatting helpers (pace, duration, distance)
@@ -80,19 +96,21 @@ uv run uvicorn app.main:app --reload
 # Frontend only (from frontend/)
 npm run dev
 
-# Run migrations (from backend/)
+# Run migrations (from backend/ or via docker)
 uv run alembic upgrade head
+docker-compose exec -T backend uv run alembic upgrade head
 
 # Create new migration (from backend/)
 uv run alembic revision --autogenerate -m "description"
+# IMPORTANT: Always manually clean autogenerated migrations - they include
+# spurious index/constraint changes for activities and daily_health tables
 
 # Run backend tests (from backend/)
 uv run pytest
 uv run pytest -v                   # Verbose
-uv run pytest tests/test_api.py    # Specific file
 
-# Frontend type check (from frontend/)
-npx next build
+# Frontend type check (inside container due to permission issues)
+docker-compose exec -T frontend npx next build
 
 # Seed Garmin history (from backend/)
 uv run python ../scripts/seed_garmin_history.py --days 365
@@ -111,24 +129,48 @@ Note: ports 8000, 8001, 5432 were taken on the dev machine, so we use 8002/5433.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health-check` | Health check |
-| GET | `/api/dashboard` | Aggregated dashboard (activities, mileage, health) |
+| GET | `/api/dashboard` | Aggregated dashboard |
 | GET | `/api/activities` | Paginated list (query: activity_type, start_date, end_date, limit, offset) |
-| GET | `/api/activities/summary` | Weekly/monthly aggregates (query: period, weeks) |
+| GET | `/api/activities/summary` | Weekly/monthly aggregates |
 | GET | `/api/activities/:id` | Detail with splits |
-| GET | `/api/health/daily` | Daily health metrics (query: start_date, end_date, limit) |
-| GET | `/api/body-composition` | Body composition entries |
-| POST | `/api/sync/garmin` | Trigger Garmin sync (background task) |
-| POST | `/api/sync/garmin/backfill` | Historical backfill (body: start_date, end_date) |
+| GET | `/api/health/daily` | Daily health metrics |
+| GET | `/api/body-composition` | Body composition entries (includes computed BMI) |
+| POST | `/api/sync/garmin` | Trigger Garmin activity/health sync |
+| POST | `/api/sync/garmin/backfill` | Historical backfill |
 | GET | `/api/sync/status` | Sync status + timestamps |
+| GET | `/api/settings` | Get app settings (passwords masked) |
+| PUT | `/api/settings` | Update app settings |
+| GET | `/api/coach/conversations` | List chat conversations |
+| GET | `/api/coach/conversations/:id` | Get conversation messages |
+| POST | `/api/coach/conversations/:id/chat` | SSE streaming chat with AI coach |
+| DELETE | `/api/coach/conversations/:id` | Delete conversation |
+| GET | `/api/training/plans` | List training plans (query: status) |
+| POST | `/api/training/plans` | Create plan with phases |
+| GET | `/api/training/plans/:id` | Get plan detail |
+| PUT | `/api/training/plans/:id` | Update plan |
+| DELETE | `/api/training/plans/:id` | Delete plan |
+| GET | `/api/training/workouts` | List workouts (query: plan_id, start_date, end_date) |
+| POST | `/api/training/workouts` | Create workout |
+| PUT | `/api/training/workouts/:id` | Update workout (auto-syncs date changes to Garmin) |
+| DELETE | `/api/training/workouts/:id` | Delete workout |
+| PATCH | `/api/training/workouts/:id/complete` | Mark workout completed |
+| PATCH | `/api/training/workouts/:id/skip` | Mark workout skipped |
+| POST | `/api/training/plans/:id/auto-match` | Auto-match workouts with activities |
+| GET | `/api/training/plans/:id/compliance` | Get plan compliance stats |
+| POST | `/api/training/sync-garmin` | Sync scheduled workouts FROM Garmin calendar |
 
 ## Database Schema
-- **settings**: Single-row config (garmin creds, withings tokens, last sync timestamps)
-- **activities**: One row per Garmin activity (garmin_activity_id as dedup key, raw_json JSONB)
+- **settings**: Single-row config (garmin/withings creds, height_cm, last sync timestamps)
+- **activities**: One row per Garmin activity (garmin_activity_id dedup, training_type, raw_json JSONB)
 - **activity_splits**: Per-km splits linked to activity
 - **daily_health**: One row per day (HR, HRV, stress, sleep, steps, body battery, raw_json JSONB)
 - **body_composition**: Weight/fat/muscle measurements (source: garmin|withings)
+- **chat_messages**: AI coach conversation messages (conversation_id, role, content)
+- **training_plans**: Plans with name, goal, date range, status (active/completed/archived)
+- **training_phases**: Plan phases (base, build, peak, taper, recovery, race)
+- **planned_workouts**: Scheduled workouts with Garmin sync IDs (garmin_workout_id, garmin_schedule_id)
 
-All migrations in `backend/alembic/versions/`. Current: `001_initial_schema.py`.
+Migrations in `backend/alembic/versions/`, 9 files from `001_initial_schema` through `b062c64dcedf_add_garmin_ids`.
 
 ## Key Conventions
 - **No auth** - single user, local only
@@ -137,16 +179,20 @@ All migrations in `backend/alembic/versions/`. Current: `001_initial_schema.py`.
 - **Async everywhere** - async SQLAlchemy, async FastAPI handlers
 - **Pydantic schemas** for all API request/response types (in `schemas/`)
 - **Date comparisons** - always use `datetime` objects, never `.isoformat()` strings in SQLAlchemy queries (asyncpg requires proper types)
+- **Frontend dates** - never use `toISOString().split("T")[0]` for date keys (timezone bug). Use `getFullYear()/getMonth()/getDate()` for local date strings.
 - **Garmin sync** - runs as FastAPI BackgroundTask, uses module-level `_is_syncing` flag
-- **Dedup** - activities deduped by `garmin_activity_id`, health by `date`
+- **Garmin calendar** - bidirectional sync. Import from `/calendar-service/year/{year}/month/{month}` (0-indexed months). Sync-back via `/workout-service/schedule/{id}` (POST to schedule, DELETE to unschedule).
+- **Dedup** - activities by `garmin_activity_id`, health by `date`, calendar workouts by `(date, title)`
+- **Settings** - DB-first with .env fallback for credentials
 - **Light theme** - using light mode with emerald green primary accent
 - **Shadcn/ui** - components in `frontend/src/components/ui/`, add with `npx shadcn@latest add <component>`
+- **AI Coach** - general training and health coach (NOT marathon-specific). Covers running, fitness, recovery, sleep, body composition, nutrition.
 
 ## Implementation Phases
 - **Phase 1** (DONE): Foundation, Garmin sync, dashboard with real data
-- **Phase 2** (TODO): Withings sync, activity detail, stats page with charts
-- **Phase 3** (TODO): AI coach chat (Claude SSE streaming), settings page
-- **Phase 4** (TODO): Training plan management, calendar view
+- **Phase 2** (DONE): Activity detail, stats page with charts, body composition, BMI
+- **Phase 3** (PARTIAL): AI coach chat with SSE streaming works. Settings page done. Coach is general training/health coach.
+- **Phase 4** (DONE): Training plan management, 4-week calendar view, drag-and-drop, Garmin calendar sync (bidirectional), auto-match workouts with activities, compliance tracking
 - **Phase 5** (TODO): Auto-sync, overtraining detection, race prediction
 
 ## Common Pitfalls
@@ -155,4 +201,8 @@ All migrations in `backend/alembic/versions/`. Current: `001_initial_schema.py`.
 - PostgreSQL on port 5433 (not 5432)
 - uv is at `~/.local/bin/uv` - may need `export PATH="$HOME/.local/bin:$PATH"`
 - Alembic env.py has sys.path hack to find `app` module
+- Alembic autogenerate always includes spurious changes - manually clean every migration
 - Frontend uses Tailwind v4 with `@theme inline` CSS syntax (not tailwind.config.js)
+- `npx next build` has permission issues outside Docker - run inside container
+- Garmin calendar API months are 0-indexed (0=January)
+- garth `connectapi` passes **kwargs to requests: use `json=` not `jsonbody=`

@@ -50,6 +50,14 @@ async def get_weekly_mileage(
     return result_list
 
 
+async def get_recent_health(db: AsyncSession, days: int = 2) -> list[DailyHealth]:
+    """Get the N most recent daily health records, ordered newest first."""
+    result = await db.execute(
+        select(DailyHealth).order_by(DailyHealth.date.desc()).limit(days)
+    )
+    return list(result.scalars().all())
+
+
 async def get_health_snapshot(db: AsyncSession) -> DailyHealth | None:
     """Get the most recent daily health record."""
     result = await db.execute(

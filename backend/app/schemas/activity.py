@@ -12,10 +12,20 @@ class ActivitySplitOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+TRAINING_TYPES = [
+    "easy_run",
+    "long_run",
+    "tempo_run",
+    "interval_run",
+    "hill_repeats",
+]
+
+
 class ActivityOut(BaseModel):
     id: int
     garmin_activity_id: int
     activity_type: str | None = None
+    training_type: str | None = None
     name: str | None = None
     started_at: datetime
     duration_seconds: float | None = None
@@ -35,6 +45,10 @@ class ActivityOut(BaseModel):
 
 class ActivityDetailOut(ActivityOut):
     splits: list[ActivitySplitOut] = []
+
+
+class UpdateTrainingTypeRequest(BaseModel):
+    training_type: str | None = None
 
 
 class ActivitySummary(BaseModel):

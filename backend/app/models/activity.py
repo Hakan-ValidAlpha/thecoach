@@ -27,6 +27,7 @@ class Activity(Base):
     raw_json: Mapped[dict | None] = mapped_column(JSON)
     timeseries_json: Mapped[list | None] = mapped_column(JSON)
     polyline_json: Mapped[list | None] = mapped_column(JSON)
+    training_type: Mapped[str | None] = mapped_column(String(50))
 
     splits: Mapped[list["ActivitySplit"]] = relationship(
         back_populates="activity", cascade="all, delete-orphan"

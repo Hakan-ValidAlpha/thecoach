@@ -37,17 +37,12 @@ async def trigger_garmin_sync(
     if is_syncing():
         return SyncResult(errors=["Sync already in progress"])
 
-    email = app_settings.garmin_email
-    password = app_settings.garmin_password
+    db_settings = await db.get(Settings, 1)
+    email = (db_settings.garmin_email if db_settings else None) or app_settings.garmin_email or ""
+    password = (db_settings.garmin_password if db_settings else None) or app_settings.garmin_password or ""
 
     if not email or not password:
-        db_settings = await db.get(Settings, 1)
-        if db_settings:
-            email = email or db_settings.garmin_email or ""
-            password = password or db_settings.garmin_password or ""
-
-    if not email or not password:
-        return SyncResult(errors=["Garmin credentials not configured"])
+        return SyncResult(errors=["Garmin credentials not configured. Set them in Settings."])
 
     background_tasks.add_task(_run_garmin_sync, email, password)
     return SyncResult()
@@ -62,17 +57,12 @@ async def backfill_garmin(
     if is_syncing():
         return SyncResult(errors=["Sync already in progress"])
 
-    email = app_settings.garmin_email
-    password = app_settings.garmin_password
+    db_settings = await db.get(Settings, 1)
+    email = (db_settings.garmin_email if db_settings else None) or app_settings.garmin_email or ""
+    password = (db_settings.garmin_password if db_settings else None) or app_settings.garmin_password or ""
 
     if not email or not password:
-        db_settings = await db.get(Settings, 1)
-        if db_settings:
-            email = email or db_settings.garmin_email or ""
-            password = password or db_settings.garmin_password or ""
-
-    if not email or not password:
-        return SyncResult(errors=["Garmin credentials not configured"])
+        return SyncResult(errors=["Garmin credentials not configured. Set them in Settings."])
 
     background_tasks.add_task(
         _run_garmin_sync, email, password, request.start_date, request.end_date
