@@ -79,6 +79,61 @@ def _extract_splits(activity_id: int, raw_splits: list[dict]) -> list[dict]:
     return splits
 
 
+def _extract_timeseries(details: dict) -> tuple[list[dict], list[list[float]]]:
+    """Extract time series and GPS polyline from Garmin activity details."""
+    if not details or not isinstance(details, dict):
+        return [], []
+
+    # Build metric index mapping
+    descriptors = details.get("metricDescriptors", [])
+    metric_index = {}
+    for d in descriptors:
+        metric_index[d.get("key")] = d.get("metricsIndex")
+
+    hr_idx = metric_index.get("directHeartRate")
+    cadence_idx = metric_index.get("directRunCadence")
+    speed_idx = metric_index.get("directSpeed")
+    distance_idx = metric_index.get("sumDistance")
+    elapsed_idx = metric_index.get("sumElapsedDuration")
+    elevation_idx = metric_index.get("directElevation")
+
+    timeseries = []
+    for sample in details.get("activityDetailMetrics", []):
+        metrics = sample.get("metrics", [])
+        point = {}
+        if elapsed_idx is not None and elapsed_idx < len(metrics):
+            point["elapsed"] = metrics[elapsed_idx]
+        if distance_idx is not None and distance_idx < len(metrics):
+            point["distance"] = metrics[distance_idx]
+        if hr_idx is not None and hr_idx < len(metrics):
+            point["hr"] = metrics[hr_idx]
+        if cadence_idx is not None and cadence_idx < len(metrics):
+            # Garmin reports strides/min, convert to steps/min (x2)
+            cadence_val = metrics[cadence_idx]
+            point["cadence"] = cadence_val * 2 if cadence_val else cadence_val
+        if speed_idx is not None and speed_idx < len(metrics):
+            speed = metrics[speed_idx]
+            if speed and speed > 0:
+                point["pace"] = round((1000 / speed) / 60, 2)
+        if elevation_idx is not None and elevation_idx < len(metrics):
+            elev_val = metrics[elevation_idx]
+            point["elevation"] = round(elev_val, 1) if elev_val is not None else None
+        timeseries.append(point)
+
+    # Extract polyline (downsample to ~500 points)
+    polyline = []
+    geo = details.get("geoPolylineDTO", {})
+    if geo:
+        raw_points = geo.get("polyline", [])
+        step = max(1, len(raw_points) // 500)
+        for i in range(0, len(raw_points), step):
+            p = raw_points[i]
+            if p.get("valid", True):
+                polyline.append([p["lat"], p["lon"]])
+
+    return timeseries, polyline
+
+
 def _extract_daily_health(
     day: date,
     stats: dict,
@@ -203,11 +258,28 @@ async def sync_garmin(
                         client.get_activity_splits, garmin_id
                     )
                     await asyncio.sleep(0.5)
-                    if details and isinstance(details, list):
-                        for split_data in _extract_splits(activity.id, details):
+                    laps = None
+                    if isinstance(details, dict):
+                        laps = details.get("lapDTOs", [])
+                    elif isinstance(details, list):
+                        laps = details
+                    if laps:
+                        for split_data in _extract_splits(activity.id, laps):
                             db.add(ActivitySplit(**split_data))
                 except Exception as e:
                     logger.warning(f"Failed to fetch splits for {garmin_id}: {e}")
+
+                # Fetch timeseries + GPS data
+                try:
+                    activity_details = await asyncio.to_thread(
+                        client.get_activity_details, garmin_id
+                    )
+                    await asyncio.sleep(0.5)
+                    ts, poly = _extract_timeseries(activity_details)
+                    activity.timeseries_json = ts
+                    activity.polyline_json = poly
+                except Exception as e:
+                    logger.warning(f"Failed to fetch timeseries for {garmin_id}: {e}")
 
                 result.activities_synced += 1
 

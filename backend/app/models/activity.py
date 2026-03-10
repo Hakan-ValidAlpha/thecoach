@@ -25,6 +25,8 @@ class Activity(Base):
     training_effect_anaerobic: Mapped[float | None] = mapped_column(Float)
     vo2max_estimate: Mapped[float | None] = mapped_column(Float)
     raw_json: Mapped[dict | None] = mapped_column(JSON)
+    timeseries_json: Mapped[list | None] = mapped_column(JSON)
+    polyline_json: Mapped[list | None] = mapped_column(JSON)
 
     splits: Mapped[list["ActivitySplit"]] = relationship(
         back_populates="activity", cascade="all, delete-orphan"

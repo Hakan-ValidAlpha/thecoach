@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -113,3 +114,22 @@ async def get_activity(
     if not activity:
         raise HTTPException(status_code=404, detail="Activity not found")
     return ActivityDetailOut.model_validate(activity)
+
+
+@router.get("/activities/{activity_id}/timeseries")
+async def get_activity_timeseries(
+    activity_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return stored HR, pace, cadence time series and GPS polyline."""
+    result = await db.execute(
+        select(Activity).where(Activity.id == activity_id)
+    )
+    activity = result.scalar_one_or_none()
+    if not activity:
+        raise HTTPException(status_code=404, detail="Activity not found")
+
+    return JSONResponse({
+        "timeseries": activity.timeseries_json or [],
+        "polyline": activity.polyline_json or [],
+    })
