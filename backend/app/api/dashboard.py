@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -9,7 +9,7 @@ from app.models.activity import Activity
 from app.schemas.activity import ActivityOut
 from app.schemas.dashboard import DashboardResponse, DashboardTrends, TrendIndicator
 from app.schemas.health import DailyHealthOut
-from app.services.analytics import get_health_snapshot, get_weekly_mileage, get_recent_health
+from app.services.analytics import get_health_snapshot, get_weekly_mileage, get_recent_health, NON_RUNNING_TRAINING_TYPES
 
 router = APIRouter()
 
@@ -49,6 +49,7 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
                 Activity.activity_type.in_(
                     ["running", "trail_running", "treadmill_running"]
                 ),
+                or_(Activity.training_type.is_(None), Activity.training_type.notin_(NON_RUNNING_TRAINING_TYPES)),
             )
         )
     )

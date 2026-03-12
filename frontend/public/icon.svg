@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#059669"/>
+  <g transform="translate(256,256)">
+    <!-- Running figure -->
+    <circle cx="-10" cy="-120" r="32" fill="white"/>
+    <path d="M-50,-70 L-20,-30 L30,-50 M-20,-30 L-10,30 L-50,90 M-10,30 L40,80" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <!-- Heart rate line -->
+    <path d="M-120,120 L-60,120 L-30,70 L0,160 L30,90 L60,120 L120,120" stroke="white" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.8"/>
+  </g>
+</svg>

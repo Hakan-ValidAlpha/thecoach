@@ -10,6 +10,7 @@ const WORKOUT_COLORS: Record<string, string> = {
   hill_repeats: "bg-amber-100 border-amber-300 text-amber-800",
   rest: "bg-gray-50 border-gray-200 text-gray-500",
   cross_training: "bg-purple-100 border-purple-300 text-purple-800",
+  walk: "bg-teal-100 border-teal-300 text-teal-800",
 };
 
 const WORKOUT_LABELS: Record<string, string> = {
@@ -20,6 +21,7 @@ const WORKOUT_LABELS: Record<string, string> = {
   hill_repeats: "Hills",
   rest: "Rest",
   cross_training: "Cross",
+  walk: "Walk",
 };
 
 const STATUS_ICONS: Record<string, { icon: string; class: string }> = {

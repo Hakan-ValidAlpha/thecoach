@@ -1,9 +1,12 @@
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.activity import Activity
+
+# Training types that should NOT be counted in running stats
+NON_RUNNING_TRAINING_TYPES = {"walk", "cross_training", "rest"}
 from app.models.health_metric import DailyHealth
 from app.schemas.dashboard import WeeklyMileage
 
@@ -23,6 +26,7 @@ async def get_weekly_mileage(
             and_(
                 Activity.started_at >= datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc),
                 Activity.activity_type.in_(["running", "trail_running", "treadmill_running"]),
+                or_(Activity.training_type.is_(None), Activity.training_type.notin_(NON_RUNNING_TRAINING_TYPES)),
             )
         )
         .order_by(Activity.started_at)

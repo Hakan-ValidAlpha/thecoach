@@ -73,7 +73,7 @@ export function RouteMap({ polyline }: RouteMapProps) {
         <CardTitle>Route</CardTitle>
       </CardHeader>
       <CardContent>
-        <div ref={mapRef} className="h-[400px] w-full rounded-lg" />
+        <div ref={mapRef} className="h-[400px] w-full rounded-lg relative z-0" />
       </CardContent>
     </Card>
   );

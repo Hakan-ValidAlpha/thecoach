@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from pydantic import BaseModel
 
 
@@ -23,6 +24,20 @@ class ConversationSummary(BaseModel):
     message_count: int
 
 
+class BriefingChange(BaseModel):
+    tool: str
+    reason: str
+    result: dict[str, Any] | None = None
+    workout_id: int | None = None
+    scheduled_date: str | None = None
+    new_date: str | None = None
+    workout_type: str | None = None
+    title: str | None = None
+
+
 class BriefingOut(BaseModel):
     date: str
     content: str
+    changes_made: list[BriefingChange] | None = None
+    generated_at: str | None = None
+    status: str = "completed"

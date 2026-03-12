@@ -260,9 +260,13 @@ export default function StatsPage() {
 
   useEffect(() => {
     setLoading(true);
+    const today = new Date();
+    const start = new Date(today);
+    start.setDate(start.getDate() - range);
+    const startStr = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`;
     Promise.all([
-      api.getHealthDaily({ limit: range }),
-      api.getBodyComposition(range),
+      api.getHealthDaily({ start_date: startStr, limit: 365 }),
+      api.getBodyComposition({ days: range }),
     ])
       .then(([h, b]) => {
         setHealth(h);

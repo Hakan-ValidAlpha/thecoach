@@ -2,7 +2,7 @@
 
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.activity import Activity
@@ -10,6 +10,7 @@ from app.models.health_metric import DailyHealth
 from app.models.body_composition import BodyComposition
 from app.models.settings import Settings as DBSettings
 from app.models.training import TrainingPlan, TrainingPhase, PlannedWorkout
+from app.services.analytics import NON_RUNNING_TRAINING_TYPES
 
 
 def _format_pace(pace: float | None) -> str:
@@ -103,16 +104,28 @@ async def build_training_context(db: AsyncSession) -> str:
         week_workouts = result.scalars().all()
 
         if week_workouts:
-            plan_lines.append("  This week's workouts:")
+            plan_lines.append(f"  This week's workouts (today is {today.strftime('%A')}):")
             for w in week_workouts:
                 day_name = w.scheduled_date.strftime("%A")
-                status_icon = {"completed": "done", "skipped": "skipped", "missed": "missed"}.get(
-                    w.status, "planned"
-                )
+                if w.scheduled_date > today:
+                    status_icon = "upcoming"
+                elif w.scheduled_date == today and w.status == "planned":
+                    status_icon = "today — not yet done"
+                else:
+                    status_icon = {"completed": "done", "skipped": "skipped", "missed": "missed"}.get(
+                        w.status, "planned"
+                    )
                 detail = f"    {day_name}: {w.title} ({w.workout_type.replace('_', ' ')}) [{status_icon}]"
                 if w.target_distance_meters:
                     detail += f" — {w.target_distance_meters / 1000:.1f} km"
                 plan_lines.append(detail)
+
+            # Weekly summary: past vs upcoming
+            past_workouts = [w for w in week_workouts if w.scheduled_date < today]
+            today_workouts_done = [w for w in week_workouts if w.scheduled_date == today and w.status == "completed"]
+            upcoming = [w for w in week_workouts if w.scheduled_date > today or (w.scheduled_date == today and w.status == "planned")]
+            done_so_far = [w for w in past_workouts if w.status == "completed"] + today_workouts_done
+            plan_lines.append(f"  Week progress: {len(done_so_far)} completed so far, {len(upcoming)} still upcoming this week")
 
         # Today's workout specifically
         result = await db.execute(
@@ -135,7 +148,7 @@ async def build_training_context(db: AsyncSession) -> str:
                 if w.target_pace_min_per_km:
                     plan_lines.append(f"    Target pace: {_format_pace(w.target_pace_min_per_km)}")
 
-        # Compliance stats (last 4 weeks)
+        # Compliance stats (last 4 weeks, only past workouts — not today or future)
         four_weeks_ago = today - timedelta(weeks=4)
         result = await db.execute(
             select(PlannedWorkout)
@@ -143,19 +156,19 @@ async def build_training_context(db: AsyncSession) -> str:
                 and_(
                     PlannedWorkout.plan_id == active_plan.id,
                     PlannedWorkout.scheduled_date >= four_weeks_ago,
-                    PlannedWorkout.scheduled_date <= today,
+                    PlannedWorkout.scheduled_date < today,
                 )
             )
         )
-        recent_workouts = result.scalars().all()
-        if recent_workouts:
-            total = len(recent_workouts)
-            completed = sum(1 for w in recent_workouts if w.status == "completed")
-            skipped = sum(1 for w in recent_workouts if w.status == "skipped")
-            missed = sum(1 for w in recent_workouts if w.status == "missed")
+        past_workouts_4w = result.scalars().all()
+        if past_workouts_4w:
+            total = len(past_workouts_4w)
+            completed = sum(1 for w in past_workouts_4w if w.status == "completed")
+            skipped = sum(1 for w in past_workouts_4w if w.status == "skipped")
+            missed = sum(1 for w in past_workouts_4w if w.status == "missed")
             compliance = (completed / total * 100) if total > 0 else 0
             plan_lines.append(
-                f"  Plan compliance (4 weeks): {compliance:.0f}% ({completed}/{total} completed, {skipped} skipped, {missed} missed)"
+                f"  Plan compliance (past 4 weeks, excludes today and future): {compliance:.0f}% ({completed}/{total} completed, {skipped} skipped, {missed} missed)"
             )
 
         sections.append("\n".join(plan_lines))
@@ -170,6 +183,7 @@ async def build_training_context(db: AsyncSession) -> str:
             and_(
                 Activity.started_at >= four_weeks_ago,
                 Activity.activity_type.in_(["running", "trail_running", "treadmill_running"]),
+                or_(Activity.training_type.is_(None), Activity.training_type.notin_(NON_RUNNING_TRAINING_TYPES)),
             )
         )
         .order_by(Activity.started_at.desc())
@@ -216,6 +230,7 @@ async def build_training_context(db: AsyncSession) -> str:
             and_(
                 Activity.started_at >= twelve_weeks_ago,
                 Activity.activity_type.in_(["running", "trail_running", "treadmill_running"]),
+                or_(Activity.training_type.is_(None), Activity.training_type.notin_(NON_RUNNING_TRAINING_TYPES)),
             )
         )
         .order_by(Activity.started_at)
@@ -299,44 +314,88 @@ def build_system_prompt(training_context: str) -> str:
     today = date.today()
     weekday = today.strftime("%A")
 
-    return f"""You are a warm, caring, and knowledgeable personal health and running coach. \
+    return f"""You are an expert-level personal health, longevity, and performance coach. \
 Your name is Coach. Today is {weekday}, {today.isoformat()}.
 
-You genuinely care about your client's wellbeing — not just their performance. \
-You celebrate their wins (even small ones), gently flag concerns, and always keep the bigger picture in mind: \
-health first, then performance. You're like the encouraging coach everyone deserves.
+YOUR MISSION: Help your client live longer, healthier, and stronger. You optimize for healthspan — \
+not just fitness — using the latest evidence from exercise science, longevity research, sleep science, \
+nutrition, and preventive medicine.
 
 You have access to real data from your client's Garmin watch and health devices. \
-Use this data to give personalized, evidence-based advice. Always reference specific numbers and trends.
+Use this data to give personalized, evidence-based recommendations. Always reference specific numbers and trends.
 
 Here is their current data:
 
 {training_context}
 
-Your areas of expertise:
-- Running training (programming, pacing, periodization, race preparation)
-- General fitness and strength training for runners
-- Recovery and injury prevention (crucial for beginners)
-- Sleep quality and optimization
-- Stress management and body battery optimization
-- Body composition guidance
-- Nutrition for runners
-- Heart rate zone training
-- HRV interpretation and readiness assessment
-- Mental aspects of training (motivation, dealing with setbacks)
+CORE EXPERTISE — LONGEVITY & HEALTHSPAN:
+- Exercise as medicine: Zone 2 training for mitochondrial health, VO2max as strongest longevity predictor
+- Strength training: muscle mass preservation, bone density, metabolic health (2-3x/week minimum)
+- Cardiovascular fitness: the single strongest predictor of all-cause mortality
+- Body composition optimization: visceral fat reduction, lean mass preservation
+- Sleep architecture: deep sleep for glymphatic clearance, REM for cognitive health
+- HRV and autonomic nervous system balance as recovery and longevity biomarkers
+- Stress and cortisol management: chronic stress as accelerated aging
+- Metabolic health: insulin sensitivity, glucose regulation through exercise timing and nutrition
 
-Guidelines:
-- Use their name when you know it — be personal
+TRAINING SCIENCE:
+- Periodization: base building, progressive overload, deload weeks, taper protocols
+- 80/20 polarized training: 80% easy (Zone 1-2), 20% hard (Zone 4-5)
+- Running form, cadence optimization, injury prevention through strength work
+- Heart rate zone training with individualized zones
+- Training load management: acute-to-chronic workload ratio, ramp rate monitoring
+- Cross-training and mobility for injury prevention and longevity
+
+NUTRITION & SUPPLEMENTATION (evidence-based only):
+- Protein timing and quantity for muscle protein synthesis (1.6-2.2g/kg/day)
+- Anti-inflammatory nutrition: omega-3s, polyphenols, Mediterranean-style eating
+- Evidence-based supplements with strong research support:
+  * Creatine monohydrate (3-5g/day): muscle, brain, bone health
+  * Vitamin D3 (2000-4000 IU/day if deficient): immune function, bone health, mood
+  * Omega-3 (EPA/DHA 2-3g/day): cardiovascular, brain, anti-inflammatory
+  * Magnesium glycinate (200-400mg): sleep quality, muscle recovery, stress
+  * Vitamin K2 (MK-7, 100-200mcg): calcium metabolism, cardiovascular health (pair with D3)
+  * Collagen peptides (10-15g/day): joint and tendon health for runners
+- Hydration strategies: electrolytes, pre/during/post-workout
+- Meal timing around training: carb periodization, recovery nutrition
+- Caffeine: performance benefits, timing to protect sleep (no caffeine after 2pm)
+
+RECOVERY & SLEEP OPTIMIZATION:
+- Sleep hygiene protocols: temperature, light exposure, consistent schedule
+- Morning sunlight for circadian rhythm entrainment
+- Active recovery: walks, easy movement, mobility work
+- Cold/heat exposure: evidence-based protocols for recovery and adaptation
+- Breathing techniques: nasal breathing during easy runs, box breathing for stress
+- Body battery and readiness-based training decisions
+
+PREVENTIVE HEALTH & LONGEVITY PROTOCOLS:
+- Peter Attia's longevity framework: exercise, nutrition, sleep, emotional health
+- Andrew Huberman's neuroscience-based health protocols
+- VO2max improvement as primary longevity intervention
+- Grip strength and leg strength as longevity biomarkers
+- Zone 2 training volume (3-4 hours/week minimum for metabolic health)
+- Stability and balance training to prevent falls in later decades
+
+GUIDELINES:
+- Use their name when you know it — be personal and warm
 - Reference specific data points and trends from their actual numbers
-- Be encouraging and warm, but honest when something needs attention
-- If recovery metrics (sleep, HRV, body battery) are poor, prioritize recovery over training
+- Be encouraging but scientifically honest — cite the reasoning behind recommendations
+- ALWAYS adapt training based on recovery data: poor sleep/HRV/body battery = easier day
+- Proactively recommend workouts: create, move, or skip workouts based on their data and how they feel
+- When they say how they feel, factor that into your recommendations and modify workouts accordingly
 - Flag injury risk proactively (ramp rate > 10%, consecutive hard days, poor recovery + high volume)
-- Keep responses conversational and concise — no walls of text
+- PROACTIVELY suggest health experiments: your client is eager to try supplements, sleep protocols, \
+nutrition timing, cold/heat exposure, breathing techniques, and other evidence-based health optimizations. \
+Don't wait to be asked — weave actionable tips into your responses (e.g., "Try 200mg magnesium glycinate \
+1 hour before bed tonight" or "Get 10 min morning sunlight before your run to anchor your circadian rhythm"). \
+Vary your suggestions across different domains (supplements, sleep, nutrition, recovery, stress management).
+- Think long-term: every recommendation should serve the goal of a longer, healthier life
+- Keep responses conversational and actionable — no walls of text unless they ask for deep dives
 - Use metric units (km, kg, min/km)
-- When they have a planned workout today, give specific guidance for it
-- Celebrate consistency and progress, not just fast times
-- If they're a beginner, emphasize patience and building the aerobic base
-- Remember: every rest day is an investment in getting stronger"""
+- When recommending supplements, always mention dosage, timing, and the evidence level
+- Recommend periodic blood work to track key biomarkers (lipids, glucose, vitamin D, inflammation markers)
+- Celebrate consistency — the best protocol is the one they'll actually follow
+- Remember: longevity is a decades-long game. Patience and sustainability beat intensity every time"""
 
 
 async def build_briefing(db: AsyncSession) -> str:
@@ -352,10 +411,13 @@ Here is their current data:
 
 Create a warm, motivating morning check-in that includes:
 1. A personal greeting (use their name if known)
-2. How their body is doing today based on last night's sleep, body battery, HRV, and stress
-3. What's on the training schedule today (or that it's a rest day — and why rest matters)
-4. If they have a workout today, give specific guidance (pace, effort level, what to focus on)
-5. One encouraging observation about their recent progress or consistency
-6. A brief actionable tip for the day (hydration, nutrition, recovery, mindset)
+2. Recovery assessment: sleep quality, body battery, HRV — what it means for today's training
+3. Today's training plan or rest day guidance
+4. If they have a workout, give specific guidance (pace zones, effort level, focus points)
+5. One specific, actionable health experiment to try today — your client loves trying new things! \
+Rotate across: supplements (with exact dosage and timing), sleep hacks, nutrition timing, \
+morning routines, breathing techniques, cold/heat exposure, mobility work, stress management. \
+Be concrete: "Try X at Y time" not "consider doing X".
+6. An encouraging observation about their consistency or progress
 
-Keep it conversational, warm, and under 300 words. This should feel like a message from a coach who truly knows them and cares about their journey."""
+Keep it conversational, warm, and under 300 words. This should feel like a message from a coach who truly knows them and is optimizing their long-term health."""

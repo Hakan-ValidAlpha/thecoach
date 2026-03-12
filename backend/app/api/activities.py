@@ -4,12 +4,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.activity import Activity
+from app.services.analytics import NON_RUNNING_TRAINING_TYPES
 from app.schemas.activity import ActivityDetailOut, ActivityOut, ActivitySummary, UpdateTrainingTypeRequest, TRAINING_TYPES
 
 router = APIRouter()
@@ -73,6 +74,7 @@ async def activity_summary(
             and_(
                 Activity.started_at >= _date_to_utc(start),
                 Activity.activity_type.in_(running_types),
+                or_(Activity.training_type.is_(None), Activity.training_type.notin_(NON_RUNNING_TRAINING_TYPES)),
             )
         )
         .order_by(Activity.started_at)

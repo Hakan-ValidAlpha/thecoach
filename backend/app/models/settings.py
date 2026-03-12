@@ -16,6 +16,7 @@ class Settings(Base):
     withings_access_token: Mapped[str | None] = mapped_column(String(1024))
     withings_refresh_token: Mapped[str | None] = mapped_column(String(1024))
     withings_token_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    anthropic_api_key: Mapped[str | None] = mapped_column(String(255))
     height_cm: Mapped[float | None] = mapped_column(Float)
     last_garmin_sync: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_withings_sync: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

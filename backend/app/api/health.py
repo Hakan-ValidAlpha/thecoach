@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -39,14 +39,18 @@ async def get_daily_health(
 
 @router.get("/body-composition", response_model=list[BodyCompositionOut])
 async def get_body_composition(
-    limit: int = Query(default=30, le=365),
+    limit: int = Query(default=365, le=365),
+    days: Optional[int] = Query(default=None, le=365),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(BodyComposition)
-        .order_by(BodyComposition.measured_at.desc())
-        .limit(limit)
-    )
+    query = select(BodyComposition)
+    if days is not None:
+        cutoff = datetime.combine(
+            date.today() - timedelta(days=days), datetime.min.time(), tzinfo=timezone.utc
+        )
+        query = query.where(BodyComposition.measured_at >= cutoff)
+    query = query.order_by(BodyComposition.measured_at.desc()).limit(limit)
+    result = await db.execute(query)
     rows = result.scalars().all()
 
     # Compute BMI from weight + height if available

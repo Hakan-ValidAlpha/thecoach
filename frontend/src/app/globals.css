@@ -26,4 +26,17 @@ body {
   font-family: system-ui, -apple-system, sans-serif;
   background: var(--color-background);
   color: var(--color-foreground);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* iOS safe area for bottom tab bar */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Mobile chat height — account for bottom nav bar */
+@media (max-width: 767px) {
+  .mobile-chat-height {
+    height: calc(100vh - 3.5rem - 3.5rem - env(safe-area-inset-bottom, 0px)) !important;
+  }
 }

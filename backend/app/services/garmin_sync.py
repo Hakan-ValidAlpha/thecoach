@@ -250,41 +250,45 @@ async def sync_garmin(
                 if existing.scalar_one_or_none():
                     continue
 
-                data = _extract_activity(raw)
-                activity = Activity(**data)
-                db.add(activity)
-                await db.flush()
-
-                # Fetch splits
                 try:
-                    details = await asyncio.to_thread(
-                        client.get_activity_splits, garmin_id
-                    )
-                    await asyncio.sleep(0.5)
-                    laps = None
-                    if isinstance(details, dict):
-                        laps = details.get("lapDTOs", [])
-                    elif isinstance(details, list):
-                        laps = details
-                    if laps:
-                        for split_data in _extract_splits(activity.id, laps):
-                            db.add(ActivitySplit(**split_data))
-                except Exception as e:
-                    logger.warning(f"Failed to fetch splits for {garmin_id}: {e}")
+                    async with db.begin_nested():
+                        data = _extract_activity(raw)
+                        activity = Activity(**data)
+                        db.add(activity)
+                        await db.flush()
 
-                # Fetch timeseries + GPS data
-                try:
-                    activity_details = await asyncio.to_thread(
-                        client.get_activity_details, garmin_id
-                    )
-                    await asyncio.sleep(0.5)
-                    ts, poly = _extract_timeseries(activity_details)
-                    activity.timeseries_json = ts
-                    activity.polyline_json = poly
-                except Exception as e:
-                    logger.warning(f"Failed to fetch timeseries for {garmin_id}: {e}")
+                        # Fetch splits
+                        try:
+                            details = await asyncio.to_thread(
+                                client.get_activity_splits, garmin_id
+                            )
+                            await asyncio.sleep(0.5)
+                            laps = None
+                            if isinstance(details, dict):
+                                laps = details.get("lapDTOs", [])
+                            elif isinstance(details, list):
+                                laps = details
+                            if laps:
+                                for split_data in _extract_splits(activity.id, laps):
+                                    db.add(ActivitySplit(**split_data))
+                        except Exception as e:
+                            logger.warning(f"Failed to fetch splits for {garmin_id}: {e}")
 
-                result.activities_synced += 1
+                        # Fetch timeseries + GPS data
+                        try:
+                            activity_details = await asyncio.to_thread(
+                                client.get_activity_details, garmin_id
+                            )
+                            await asyncio.sleep(0.5)
+                            ts, poly = _extract_timeseries(activity_details)
+                            activity.timeseries_json = ts
+                            activity.polyline_json = poly
+                        except Exception as e:
+                            logger.warning(f"Failed to fetch timeseries for {garmin_id}: {e}")
+
+                    result.activities_synced += 1
+                except Exception as e:
+                    logger.warning(f"Skipping activity {garmin_id}: {e}")
 
         except Exception as e:
             logger.error(f"Failed to sync activities: {e}")

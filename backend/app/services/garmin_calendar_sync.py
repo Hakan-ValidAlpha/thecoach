@@ -185,6 +185,327 @@ async def sync_garmin_calendar(
     return result
 
 
+# All workout types use running (sportTypeId=1) for Forerunner 745 compatibility.
+# The Forerunner 745 doesn't support "walking" or "mobility" as workout sport types.
+# Walk/cross-training instructions go in step descriptions instead.
+WORKOUT_SPORT_TYPES = {
+    "easy_run": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
+    "long_run": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
+    "tempo_run": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
+    "interval_run": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
+    "hill_repeats": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
+    "walk": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
+    "cross_training": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
+    "rest": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
+}
+
+# Default step fields required by Garmin for Forerunner compatibility
+_DEFAULT_STEP_FIELDS = {
+    "childStepId": None,
+    "description": None,
+    "preferredEndConditionUnit": None,
+    "endConditionCompare": None,
+    "targetType": {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target", "displayOrder": 1},
+    "targetValueOne": None,
+    "targetValueTwo": None,
+    "targetValueUnit": None,
+    "zoneNumber": None,
+    "secondaryTargetType": None,
+    "secondaryTargetValueOne": None,
+    "secondaryTargetValueTwo": None,
+    "secondaryTargetValueUnit": None,
+    "secondaryZoneNumber": None,
+    "endConditionZone": None,
+    "strokeType": {"strokeTypeId": 0, "strokeTypeKey": None, "displayOrder": 0},
+    "equipmentType": {"equipmentTypeId": 0, "equipmentTypeKey": None, "displayOrder": 0},
+    "category": None,
+    "exerciseName": None,
+    "workoutProvider": None,
+    "providerExerciseSourceId": None,
+    "weightValue": None,
+    "weightUnit": None,
+}
+
+
+def _pace_to_mps(pace_min_per_km: float) -> float:
+    """Convert min/km pace to meters per second."""
+    return 1000.0 / (pace_min_per_km * 60.0)
+
+
+def _make_step(step_order: int, step_type: str, end_condition: str,
+               end_value: float | None = None, description: str | None = None,
+               pace_low: float | None = None, pace_high: float | None = None,
+               child_step_id: int | None = None) -> dict:
+    """Build a Forerunner-compatible workout step.
+
+    step_type: warmup, cooldown, interval, rest, recover
+    end_condition: time (seconds), distance (meters), lap.button
+    pace_low/pace_high: pace targets in min/km (e.g., 5.5 for 5:30/km)
+    """
+    step_types = {
+        "warmup": {"stepTypeId": 1, "stepTypeKey": "warmup", "displayOrder": 1},
+        "cooldown": {"stepTypeId": 2, "stepTypeKey": "cooldown", "displayOrder": 2},
+        "interval": {"stepTypeId": 3, "stepTypeKey": "interval", "displayOrder": 3},
+        "recovery": {"stepTypeId": 4, "stepTypeKey": "recovery", "displayOrder": 4},
+        "rest": {"stepTypeId": 5, "stepTypeKey": "rest", "displayOrder": 5},
+    }
+
+    end_conditions = {
+        "time": {"conditionTypeId": 2, "conditionTypeKey": "time", "displayOrder": 2, "displayable": True},
+        "distance": {"conditionTypeId": 3, "conditionTypeKey": "distance", "displayOrder": 3, "displayable": True},
+        "lap.button": {"conditionTypeId": 1, "conditionTypeKey": "lap.button", "displayOrder": 1, "displayable": True},
+    }
+
+    step = {
+        "type": "ExecutableStepDTO",
+        "stepOrder": step_order,
+        "stepType": step_types.get(step_type, step_types["interval"]),
+        "endCondition": end_conditions.get(end_condition, end_conditions["lap.button"]),
+        **_DEFAULT_STEP_FIELDS,
+    }
+
+    if description:
+        step["description"] = description
+    if child_step_id is not None:
+        step["childStepId"] = child_step_id
+
+    if end_value is not None:
+        step["endConditionValue"] = end_value
+        if end_condition == "distance":
+            step["preferredEndConditionUnit"] = {"unitId": 2, "unitKey": "kilometer", "factor": 100000.0}
+
+    # Add pace target if specified
+    if pace_low is not None and pace_high is not None:
+        step["targetType"] = {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone", "displayOrder": 6}
+        # Garmin uses m/s: lower pace (slower) = lower m/s = targetValueOne
+        # higher pace (faster) = higher m/s = targetValueTwo
+        step["targetValueOne"] = round(_pace_to_mps(pace_low), 7)
+        step["targetValueTwo"] = round(_pace_to_mps(pace_high), 7)
+
+    return step
+
+
+def _make_repeat(step_order: int, iterations: int, steps: list[dict]) -> dict:
+    """Build a Forerunner-compatible repeat group."""
+    return {
+        "type": "RepeatGroupDTO",
+        "stepOrder": step_order,
+        "stepType": {"stepTypeId": 6, "stepTypeKey": "repeat", "displayOrder": 6},
+        "childStepId": 1,
+        "numberOfIterations": iterations,
+        "workoutSteps": steps,
+        "endConditionValue": float(iterations),
+        "preferredEndConditionUnit": None,
+        "endConditionCompare": None,
+        "endCondition": {"conditionTypeId": 7, "conditionTypeKey": "iterations", "displayOrder": 7, "displayable": False},
+        "smartRepeat": False,
+    }
+
+
+def build_garmin_steps(workout_type: str, garmin_steps: list[dict] | None = None,
+                       duration_seconds: int | None = None,
+                       distance_meters: float | None = None) -> list[dict]:
+    """Build Forerunner-compatible workout steps from AI-provided structured steps or defaults.
+
+    garmin_steps format (from AI tool):
+    [
+        {"type": "warmup", "duration_seconds": 600, "description": "Easy jog warmup"},
+        {"type": "interval", "distance_meters": 400, "pace_low": 5.75, "pace_high": 5.25, "description": "Fast"},
+        {"type": "rest", "duration_seconds": 60, "description": "Walk recovery"},
+        {"type": "repeat", "iterations": 4, "steps": [<nested steps>]},
+        {"type": "cooldown", "duration_seconds": 300},
+    ]
+    """
+    if garmin_steps:
+        return _build_from_ai_steps(garmin_steps)
+
+    # Default simple structures per workout type
+    step_order = 1
+
+    if workout_type in ("easy_run", "long_run"):
+        end_cond = "distance" if distance_meters else ("time" if duration_seconds else "lap.button")
+        end_val = distance_meters if distance_meters else (duration_seconds if duration_seconds else None)
+        return [_make_step(1, "warmup", end_cond, end_val, "Run at easy, conversational pace")]
+
+    if workout_type == "walk":
+        end_cond = "time" if duration_seconds else ("distance" if distance_meters else "lap.button")
+        end_val = duration_seconds if duration_seconds else (distance_meters if distance_meters else None)
+        return [_make_step(1, "warmup", end_cond, end_val, "Walk at comfortable pace")]
+
+    if workout_type == "tempo_run":
+        steps = []
+        steps.append(_make_step(1, "warmup", "time", 600, "10 min warmup jog"))
+        main_cond = "distance" if distance_meters else ("time" if duration_seconds else "lap.button")
+        main_val = (distance_meters - 2000) if distance_meters else (
+            (duration_seconds - 1200) if duration_seconds else None)
+        steps.append(_make_step(2, "interval", main_cond, main_val if main_val and main_val > 0 else None, "Tempo effort"))
+        steps.append(_make_step(3, "cooldown", "time", 600, "10 min cooldown jog"))
+        return steps
+
+    # Default: single open step
+    end_cond = "distance" if distance_meters else ("time" if duration_seconds else "lap.button")
+    end_val = distance_meters if distance_meters else (duration_seconds if duration_seconds else None)
+    return [_make_step(1, "interval", end_cond, end_val)]
+
+
+def _build_from_ai_steps(ai_steps: list[dict], start_order: int = 1) -> list[dict]:
+    """Convert AI-provided step definitions to Garmin format."""
+    garmin_steps = []
+    order = start_order
+
+    for s in ai_steps:
+        step_type = s.get("type", "interval")
+
+        if step_type == "repeat":
+            inner_steps = _build_from_ai_steps(s.get("steps", []), start_order=order + 1)
+            garmin_steps.append(_make_repeat(order, s.get("iterations", 1), inner_steps))
+            order += 1 + len(inner_steps)
+            continue
+
+        # Determine end condition
+        if s.get("duration_seconds"):
+            end_cond, end_val = "time", s["duration_seconds"]
+        elif s.get("distance_meters"):
+            end_cond, end_val = "distance", s["distance_meters"]
+        else:
+            end_cond, end_val = "lap.button", None
+
+        step = _make_step(
+            step_order=order,
+            step_type=step_type,
+            end_condition=end_cond,
+            end_value=end_val,
+            description=s.get("description"),
+            pace_low=s.get("pace_low"),
+            pace_high=s.get("pace_high"),
+            child_step_id=s.get("child_step_id"),
+        )
+        garmin_steps.append(step)
+        order += 1
+
+    return garmin_steps
+
+
+async def create_and_schedule_garmin_workout(
+    client: Garmin,
+    workout: PlannedWorkout,
+    garmin_steps: list[dict] | None = None,
+) -> dict:
+    """Create a Forerunner-compatible workout on Garmin Connect and schedule it.
+
+    garmin_steps: optional structured step definitions from the AI coach.
+    If not provided, builds default steps based on workout_type.
+    """
+    result = {"success": False, "garmin_workout_id": None, "garmin_schedule_id": None, "error": None}
+
+    sport = WORKOUT_SPORT_TYPES.get(workout.workout_type, {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1})
+
+    steps = build_garmin_steps(
+        workout.workout_type,
+        garmin_steps=garmin_steps,
+        duration_seconds=workout.target_duration_seconds,
+        distance_meters=workout.target_distance_meters,
+    )
+
+    workout_data = {
+        "workoutName": workout.title,
+        "description": workout.description or "",
+        "sportType": sport,
+        "workoutSegments": [
+            {
+                "segmentOrder": 1,
+                "sportType": sport,
+                "workoutSteps": steps,
+            }
+        ],
+    }
+
+    if workout.target_distance_meters:
+        workout_data["estimatedDistanceInMeters"] = workout.target_distance_meters
+    if workout.target_duration_seconds:
+        workout_data["estimatedDurationInSecs"] = workout.target_duration_seconds
+
+    try:
+        response = await asyncio.to_thread(
+            client.connectapi,
+            "/workout-service/workout",
+            method="POST",
+            json=workout_data,
+        )
+
+        garmin_workout_id = response.get("workoutId") if isinstance(response, dict) else None
+        if not garmin_workout_id:
+            result["error"] = "Failed to get workoutId from Garmin response"
+            return result
+
+        result["garmin_workout_id"] = garmin_workout_id
+        logger.info(f"Created Garmin workout {garmin_workout_id}: {workout.title}")
+
+        schedule_data = {"date": workout.scheduled_date.isoformat()}
+        schedule_response = await asyncio.to_thread(
+            client.connectapi,
+            f"/workout-service/schedule/{garmin_workout_id}",
+            method="POST",
+            json=schedule_data,
+        )
+
+        garmin_schedule_id = schedule_response.get("workoutScheduleId") if isinstance(schedule_response, dict) else None
+        result["garmin_schedule_id"] = garmin_schedule_id
+        result["success"] = True
+        logger.info(f"Scheduled workout {garmin_workout_id} on {workout.scheduled_date}, schedule_id={garmin_schedule_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to create/schedule workout on Garmin: {e}")
+        result["error"] = str(e)
+
+    return result
+
+
+async def unschedule_garmin_workout(
+    client: Garmin,
+    workout: PlannedWorkout,
+) -> dict:
+    """Remove a workout from the Garmin calendar.
+
+    Deletes the schedule (unschedules) and optionally deletes the workout itself.
+    """
+    result = {"success": False, "error": None}
+
+    try:
+        # Unschedule from calendar
+        if workout.garmin_schedule_id:
+            try:
+                await asyncio.to_thread(
+                    client.connectapi,
+                    f"/workout-service/schedule/{workout.garmin_schedule_id}",
+                    method="DELETE",
+                )
+                logger.info(f"Unscheduled Garmin workout schedule {workout.garmin_schedule_id}")
+            except Exception as e:
+                logger.warning(f"Failed to unschedule {workout.garmin_schedule_id}: {e}")
+
+        # Delete the workout itself if we created it (has workout_id)
+        if workout.garmin_workout_id:
+            try:
+                await asyncio.to_thread(
+                    client.connectapi,
+                    f"/workout-service/workout/{workout.garmin_workout_id}",
+                    method="DELETE",
+                )
+                logger.info(f"Deleted Garmin workout {workout.garmin_workout_id}")
+            except Exception as e:
+                # May fail if workout is from Runna or another provider — that's OK
+                logger.warning(f"Could not delete Garmin workout {workout.garmin_workout_id}: {e}")
+
+        result["success"] = True
+
+    except Exception as e:
+        logger.error(f"Failed to unschedule workout from Garmin: {e}")
+        result["error"] = str(e)
+
+    return result
+
+
 async def reschedule_garmin_workout(
     client: Garmin,
     workout: PlannedWorkout,

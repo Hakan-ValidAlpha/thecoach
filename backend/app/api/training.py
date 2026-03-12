@@ -21,7 +21,7 @@ from app.schemas.training import (
     PlanCompliance, PhaseCompliance,
 )
 from app.services.training import auto_match_workouts
-from app.services.garmin_calendar_sync import reschedule_garmin_workout
+from app.services.garmin_calendar_sync import reschedule_garmin_workout, unschedule_garmin_workout
 
 router = APIRouter()
 
@@ -287,10 +287,38 @@ async def update_workout(
 
 
 @router.delete("/workouts/{workout_id}")
-async def delete_workout(workout_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_workout(
+    workout_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     workout = await db.get(PlannedWorkout, workout_id)
     if not workout:
         raise HTTPException(status_code=404, detail="Workout not found")
+
+    # Unschedule from Garmin if linked
+    if workout.garmin_schedule_id or workout.garmin_workout_id:
+        garmin_workout_id = workout.garmin_workout_id
+        garmin_schedule_id = workout.garmin_schedule_id
+
+        async def _unschedule():
+            from app.services.garmin_sync import _get_garmin_client
+            try:
+                email, password = await _get_garmin_client_from_db()
+                if not email or not password:
+                    return
+                client = await asyncio.to_thread(_get_garmin_client, email, password)
+                from types import SimpleNamespace
+                w = SimpleNamespace(
+                    garmin_workout_id=garmin_workout_id,
+                    garmin_schedule_id=garmin_schedule_id,
+                )
+                await unschedule_garmin_workout(client, w)
+            except Exception as e:
+                logger.warning(f"Failed to unschedule from Garmin: {e}")
+
+        background_tasks.add_task(_unschedule)
+
     await db.delete(workout)
     await db.commit()
     return {"status": "deleted"}

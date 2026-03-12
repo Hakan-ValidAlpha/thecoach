@@ -101,6 +101,9 @@ async def auto_match_workouts(
             workout.completed_activity_id = best.id
             workout.status = "completed"
             workout.completed_at = best.started_at
+            # Set training_type on the activity to match the planned workout
+            if workout.workout_type and not best.training_type:
+                best.training_type = workout.workout_type
             linked_ids.add(best.id)
             matched += 1
 

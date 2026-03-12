@@ -4,6 +4,7 @@ from app.models.health_metric import DailyHealth
 from app.models.body_composition import BodyComposition
 from app.models.chat import ChatMessage
 from app.models.training import TrainingPlan, TrainingPhase, PlannedWorkout
+from app.models.briefing import DailyBriefing
 
 __all__ = [
     "Settings",
@@ -15,4 +16,5 @@ __all__ = [
     "TrainingPlan",
     "TrainingPhase",
     "PlannedWorkout",
+    "DailyBriefing",
 ]

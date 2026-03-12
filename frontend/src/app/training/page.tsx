@@ -228,27 +228,29 @@ export default function TrainingPage() {
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">{activePlan.name}</h1>
-          {activePlan.goal && (
-            <p className="text-sm text-muted-foreground">{activePlan.goal}</p>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
+      <div className="space-y-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold truncate">{activePlan.name}</h1>
+            {activePlan.goal && (
+              <p className="text-sm text-muted-foreground truncate">{activePlan.goal}</p>
+            )}
+          </div>
           {compliance && (
-            <div className="flex items-center gap-2 mr-2">
-              <div className="w-24 h-2 rounded-full bg-muted overflow-hidden">
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="w-16 md:w-24 h-2 rounded-full bg-muted overflow-hidden">
                 <div
                   className="h-full rounded-full bg-emerald-500 transition-all"
                   style={{ width: `${compliance.pct}%` }}
                 />
               </div>
-              <span className="text-xs text-muted-foreground">
-                {compliance.completed}/{compliance.total} ({compliance.pct}%)
+              <span className="text-xs text-muted-foreground whitespace-nowrap">
+                {compliance.pct}%
               </span>
             </div>
           )}
+        </div>
+        <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="outline" onClick={handleSyncGarmin} disabled={syncing}>
             {syncing ? "Syncing..." : "Sync Garmin"}
           </Button>

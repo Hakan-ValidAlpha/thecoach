@@ -6,7 +6,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8002";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL === undefined
+  ? "http://localhost:8002"
+  : process.env.NEXT_PUBLIC_API_URL;
 
 function formatDate(d: string | null) {
   if (!d) return "Never";
@@ -25,6 +27,7 @@ export default function SettingsPage() {
   const [garminPassword, setGarminPassword] = useState("");
   const [withingsClientId, setWithingsClientId] = useState("");
   const [withingsClientSecret, setWithingsClientSecret] = useState("");
+  const [anthropicApiKey, setAnthropicApiKey] = useState("");
   // Profile state
   const [userName, setUserName] = useState("");
   const [age, setAge] = useState("");
@@ -62,6 +65,7 @@ export default function SettingsPage() {
       setSettings(updated);
       setGarminPassword("");
       setWithingsClientSecret("");
+      setAnthropicApiKey("");
       setMessage({ type: "success", text: `${section} saved successfully` });
     } catch (err) {
       setMessage({ type: "error", text: err instanceof Error ? err.message : "Save failed" });
@@ -112,13 +116,6 @@ export default function SettingsPage() {
       )}
 
       <div className="grid gap-6 max-w-2xl">
-        {/* API Key notice */}
-        {!loading && (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            The Anthropic API key for the AI Coach must be set in the <code className="font-mono text-xs bg-amber-100 px-1 rounded">.env</code> file as <code className="font-mono text-xs bg-amber-100 px-1 rounded">ANTHROPIC_API_KEY</code>, then restart the backend.
-          </div>
-        )}
-
         {/* Profile & Goals */}
         <Card>
           <CardHeader>
@@ -377,6 +374,43 @@ export default function SettingsPage() {
                 )}
               </div>
             </div>
+          </CardContent>
+        </Card>
+        {/* AI Coach */}
+        <Card>
+          <CardHeader>
+            <CardTitle>AI Coach</CardTitle>
+            <CardDescription>Anthropic API key for the Claude-powered coach</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (anthropicApiKey) {
+                  handleSave("API key", { anthropic_api_key: anthropicApiKey });
+                }
+              }}
+              className="space-y-4"
+            >
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  API Key
+                  {settings?.anthropic_api_key_set && (
+                    <span className="ml-2 text-xs text-muted-foreground">(currently set)</span>
+                  )}
+                </label>
+                <input
+                  type="password"
+                  value={anthropicApiKey}
+                  onChange={(e) => setAnthropicApiKey(e.target.value)}
+                  placeholder={settings?.anthropic_api_key_set ? "Leave blank to keep current" : "sk-ant-..."}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono text-xs focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+              <Button type="submit" size="sm" disabled={saving}>
+                {saving ? "Saving..." : "Save"}
+              </Button>
+            </form>
           </CardContent>
         </Card>
       </div>

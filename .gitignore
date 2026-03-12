@@ -1,6 +1,8 @@
 # Environment
 .env
+.env.prod
 *.env.local
+.deploy-config
 
 # Python
 __pycache__/
@@ -28,6 +30,7 @@ Thumbs.db
 
 # Database
 pgdata/
+backups/
 
 # Garmin session
 *.garth/

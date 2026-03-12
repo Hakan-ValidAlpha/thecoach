@@ -1,4 +1,6 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8002";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL === undefined
+  ? "http://localhost:8002"
+  : process.env.NEXT_PUBLIC_API_URL;
 
 async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}/api${path}`, {
@@ -236,6 +238,7 @@ export interface AppSettings {
   withings_client_id: string | null;
   withings_client_secret_set: boolean;
   withings_connected: boolean;
+  anthropic_api_key_set: boolean;
   last_garmin_sync: string | null;
   last_withings_sync: string | null;
   user_name: string | null;
@@ -253,6 +256,7 @@ export interface SettingsUpdate {
   garmin_password?: string | null;
   withings_client_id?: string | null;
   withings_client_secret?: string | null;
+  anthropic_api_key?: string | null;
   user_name?: string | null;
   age?: number | null;
   running_experience?: string | null;
@@ -262,9 +266,23 @@ export interface SettingsUpdate {
   injuries_notes?: string | null;
 }
 
+export interface BriefingChange {
+  tool: string;
+  reason: string;
+  result?: Record<string, unknown>;
+  workout_id?: number;
+  scheduled_date?: string;
+  new_date?: string;
+  workout_type?: string;
+  title?: string;
+}
+
 export interface Briefing {
   date: string;
   content: string;
+  changes_made?: BriefingChange[] | null;
+  generated_at?: string | null;
+  status?: string;
 }
 
 // API functions
@@ -313,8 +331,13 @@ export const api = {
     return fetchApi<DailyHealth[]>(`/health/daily${qs ? `?${qs}` : ""}`);
   },
 
-  getBodyComposition: (limit = 30) =>
-    fetchApi<BodyComposition[]>(`/body-composition?limit=${limit}`),
+  getBodyComposition: (params?: { limit?: number; days?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.limit !== undefined) query.set("limit", String(params.limit));
+    if (params?.days !== undefined) query.set("days", String(params.days));
+    const qs = query.toString();
+    return fetchApi<BodyComposition[]>(`/body-composition${qs ? `?${qs}` : ""}`);
+  },
 
   syncGarmin: () => fetchApi<SyncResult>("/sync/garmin", { method: "POST" }),
 
@@ -325,6 +348,10 @@ export const api = {
   syncWithings: () => fetchApi<{ status: string }>("/withings/sync", { method: "POST" }),
 
   getBriefing: () => fetchApi<Briefing>("/coach/briefing"),
+
+  generateBriefing: () => fetchApi<{ status: string }>("/coach/briefing/generate", { method: "POST" }),
+
+  getBriefings: (limit = 7) => fetchApi<Briefing[]>(`/coach/briefings?limit=${limit}`),
 
   getConversations: () => fetchApi<ConversationSummary[]>("/coach/conversations"),
 
