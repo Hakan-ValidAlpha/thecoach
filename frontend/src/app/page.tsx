@@ -7,6 +7,7 @@ import { HealthCards } from "@/components/dashboard/health-cards";
 import { RecentActivities } from "@/components/dashboard/recent-activities";
 import { WeeklyMileageChart } from "@/components/charts/weekly-mileage-chart";
 import { SyncButton } from "@/components/dashboard/sync-button";
+import { FitnessAgeCard } from "@/components/dashboard/fitness-age-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -122,7 +123,12 @@ export default function DashboardPage() {
         trends={data.trends}
       />
 
-      <WeeklyMileageChart data={data.weekly_mileage} />
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="md:col-span-2">
+          <WeeklyMileageChart data={data.weekly_mileage} />
+        </div>
+        <FitnessAgeCard />
+      </div>
 
       <RecentActivities activities={data.recent_activities} />
     </div>

@@ -15,6 +15,7 @@ class SettingsOut(BaseModel):
     # User profile
     user_name: str | None = None
     age: int | None = None
+    gender: str | None = None
     running_experience: str | None = None
     primary_goal: str | None = None
     goal_race: str | None = None
@@ -32,6 +33,7 @@ class SettingsUpdate(BaseModel):
     # User profile
     user_name: str | None = None
     age: int | None = None
+    gender: str | None = None
     running_experience: str | None = None
     primary_goal: str | None = None
     goal_race: str | None = None

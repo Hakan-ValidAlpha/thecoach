@@ -115,7 +115,7 @@ async def build_training_context(db: AsyncSession) -> str:
                     status_icon = {"completed": "done", "skipped": "skipped", "missed": "missed"}.get(
                         w.status, "planned"
                     )
-                detail = f"    {day_name}: {w.title} ({w.workout_type.replace('_', ' ')}) [{status_icon}]"
+                detail = f"    {day_name} {w.scheduled_date}: {w.title} ({w.workout_type.replace('_', ' ')}) [ID:{w.id}] [{status_icon}]"
                 if w.target_distance_meters:
                     detail += f" — {w.target_distance_meters / 1000:.1f} km"
                 plan_lines.append(detail)
@@ -126,6 +126,30 @@ async def build_training_context(db: AsyncSession) -> str:
             upcoming = [w for w in week_workouts if w.scheduled_date > today or (w.scheduled_date == today and w.status == "planned")]
             done_so_far = [w for w in past_workouts if w.status == "completed"] + today_workouts_done
             plan_lines.append(f"  Week progress: {len(done_so_far)} completed so far, {len(upcoming)} still upcoming this week")
+
+        # Next 3 weeks of upcoming workouts (so coach can manage them)
+        next_week_start = week_end + timedelta(days=1)
+        three_weeks_out = next_week_start + timedelta(weeks=3)
+        result = await db.execute(
+            select(PlannedWorkout)
+            .where(
+                and_(
+                    PlannedWorkout.plan_id == active_plan.id,
+                    PlannedWorkout.scheduled_date >= next_week_start,
+                    PlannedWorkout.scheduled_date <= three_weeks_out,
+                )
+            )
+            .order_by(PlannedWorkout.scheduled_date)
+        )
+        upcoming_workouts = result.scalars().all()
+        if upcoming_workouts:
+            plan_lines.append("  Upcoming workouts (next 3 weeks):")
+            for w in upcoming_workouts:
+                day_name = w.scheduled_date.strftime("%A")
+                detail = f"    {day_name} {w.scheduled_date}: {w.title} ({w.workout_type.replace('_', ' ')}) [ID:{w.id}]"
+                if w.target_distance_meters:
+                    detail += f" — {w.target_distance_meters / 1000:.1f} km"
+                plan_lines.append(detail)
 
         # Today's workout specifically
         result = await db.execute(
@@ -140,7 +164,7 @@ async def build_training_context(db: AsyncSession) -> str:
         todays_workouts = result.scalars().all()
         if todays_workouts:
             for w in todays_workouts:
-                plan_lines.append(f"  TODAY'S WORKOUT: {w.title} ({w.workout_type.replace('_', ' ')})")
+                plan_lines.append(f"  TODAY'S WORKOUT [ID:{w.id}]: {w.title} ({w.workout_type.replace('_', ' ')})")
                 if w.description:
                     plan_lines.append(f"    Instructions: {w.description}")
                 if w.target_distance_meters:
@@ -288,6 +312,31 @@ async def build_training_context(db: AsyncSession) -> str:
             lines.append(", ".join(parts))
         sections.append("\n".join(lines))
 
+    # --- Training pace zones (from recent data) ---
+    if activities:
+        # Find best recent paces by distance to estimate fitness
+        recent_paces = [a.avg_pace_min_per_km for a in activities if a.avg_pace_min_per_km and a.distance_meters and a.distance_meters >= 1000]
+        if recent_paces:
+            fastest_pace = min(recent_paces)
+            easy_paces = [a.avg_pace_min_per_km for a in activities
+                         if a.avg_pace_min_per_km and a.training_type in (None, "easy_run", "long_run")
+                         and a.distance_meters and a.distance_meters >= 2000]
+            avg_easy_pace = sum(easy_paces) / len(easy_paces) if easy_paces else None
+
+            # Estimate zones from fastest recent effort
+            zone_lines = ["ESTIMATED TRAINING PACES (based on recent data):"]
+            zone_lines.append(f"  Fastest recent pace: {_format_pace(fastest_pace)}")
+            if avg_easy_pace:
+                zone_lines.append(f"  Average easy pace: {_format_pace(avg_easy_pace)}")
+            # Zone estimates (rough, based on fastest effort as threshold proxy)
+            zone_lines.append(f"  Zone 1 (recovery): {_format_pace(fastest_pace * 1.35)}-{_format_pace(fastest_pace * 1.45)}")
+            zone_lines.append(f"  Zone 2 (easy/aerobic): {_format_pace(fastest_pace * 1.20)}-{_format_pace(fastest_pace * 1.35)}")
+            zone_lines.append(f"  Zone 3 (tempo): {_format_pace(fastest_pace * 1.08)}-{_format_pace(fastest_pace * 1.15)}")
+            zone_lines.append(f"  Zone 4 (threshold): {_format_pace(fastest_pace * 1.00)}-{_format_pace(fastest_pace * 1.08)}")
+            zone_lines.append(f"  Zone 5 (VO2max intervals): {_format_pace(fastest_pace * 0.90)}-{_format_pace(fastest_pace * 0.98)}")
+            zone_lines.append("  Note: these are estimates — adjust based on RPE and heart rate response")
+            sections.append("\n".join(zone_lines))
+
     # --- Latest body composition ---
     result = await db.execute(
         select(BodyComposition).order_by(BodyComposition.measured_at.desc()).limit(1)
@@ -338,13 +387,24 @@ CORE EXPERTISE — LONGEVITY & HEALTHSPAN:
 - Stress and cortisol management: chronic stress as accelerated aging
 - Metabolic health: insulin sensitivity, glucose regulation through exercise timing and nutrition
 
-TRAINING SCIENCE:
-- Periodization: base building, progressive overload, deload weeks, taper protocols
-- 80/20 polarized training: 80% easy (Zone 1-2), 20% hard (Zone 4-5)
-- Running form, cadence optimization, injury prevention through strength work
-- Heart rate zone training with individualized zones
-- Training load management: acute-to-chronic workload ratio, ramp rate monitoring
+TRAINING SCIENCE & PLAN DESIGN:
+- Periodization: base building → build → peak → taper. Each phase has distinct goals.
+- 80/20 polarized training: ~80% easy (Zone 1-2), ~20% quality (Zone 3-5). Most runs should be truly easy.
+- Progressive overload: increase weekly volume 5-10% per week within a phase
+- Deload weeks: every 3-4 weeks, reduce volume to 60-70% of peak. Critical for adaptation.
+- Base phase (4-6 weeks): mostly easy running, build aerobic engine, 1 long run/week, minimal intensity
+- Build phase (4-6 weeks): add tempo runs and intervals, increase weekly volume, long run with progression
+- Peak phase (2-3 weeks): highest volume, sharpest workouts, race-specific sessions
+- Taper phase (1-3 weeks): reduce volume 40-60%, maintain some intensity, trust the training
+- Key sessions per week: 1 long run, 1 quality session (tempo or intervals), rest are easy runs
+- For beginners: 3-4 runs/week maximum. Intermediate: 4-5. Advanced: 5-6.
+- Hard-easy principle: never put quality sessions on consecutive days
+- Long run: 25-30% of weekly volume, increase by ~1-2km per week
+- Running form, cadence optimization (~170-180 spm), injury prevention through strength work
+- Heart rate zone training with individualized zones from recent pace data
+- Training load management: acute-to-chronic workload ratio, ramp rate monitoring (keep <10%/week)
 - Cross-training and mobility for injury prevention and longevity
+- Strength training 2x/week: squats, deadlifts, lunges, calf raises, core — essential for running economy and injury prevention
 
 NUTRITION & SUPPLEMENTATION (evidence-based only):
 - Protein timing and quantity for muscle protein synthesis (1.6-2.2g/kg/day)
@@ -359,6 +419,32 @@ NUTRITION & SUPPLEMENTATION (evidence-based only):
 - Hydration strategies: electrolytes, pre/during/post-workout
 - Meal timing around training: carb periodization, recovery nutrition
 - Caffeine: performance benefits, timing to protect sleep (no caffeine after 2pm)
+
+CLIENT'S SUPPLEMENT STACK (available at home):
+- Magnesium Glycinate 120mg capsules (NOW Foods)
+- Creatine Gummies (Wellgard)
+- Collagen tablets (Great Earth, 120 tablets)
+- K2+D3 Vegan capsules (Great Earth)
+- Multivitamin Premium capsules (Great Earth)
+- Iron 25mg capsules (Great Earth)
+- Methyl Vitamin B Complex capsules (Great Earth)
+
+RECOMMENDED DAILY SUPPLEMENT PROTOCOL (include in daily briefing):
+  Morning with breakfast:
+    - Multivitamin Premium (1 cap) — fat-soluble vitamins absorb better with food
+    - K2+D3 Vegan (1 cap) — vitamin D needs fat for absorption, K2 directs calcium to bones
+    - Iron 25mg (1 cap) — take with vitamin C (from multi or food), NOT with coffee/tea (blocks absorption). \
+Skip on days with high red meat intake.
+    - Methyl Vitamin B Complex (1 cap) — methylated B vitamins for energy metabolism. Take in morning, not evening (can be stimulating).
+  Post-workout or with lunch:
+    - Creatine (daily, per gummy dosage) — 3-5g equivalent daily for muscle, brain, bone health. Timing doesn't matter much but consistency does.
+    - Collagen (2 tablets) — take with vitamin C for better synthesis. Good for joint/tendon health for runners.
+  Evening, 1 hour before bed:
+    - Magnesium Glycinate (1-2 caps, 120-240mg) — glycinate form is calming, supports sleep quality and muscle recovery.
+
+  NOTE: Iron should NOT be taken at the same time as magnesium or calcium (they compete for absorption). \
+Morning iron + evening magnesium is the optimal split. Adjust iron frequency based on blood work — \
+men don't always need daily iron supplementation, recommend periodic ferritin testing.
 
 RECOVERY & SLEEP OPTIMIZATION:
 - Sleep hygiene protocols: temperature, light exposure, consistent schedule
@@ -414,10 +500,12 @@ Create a warm, motivating morning check-in that includes:
 2. Recovery assessment: sleep quality, body battery, HRV — what it means for today's training
 3. Today's training plan or rest day guidance
 4. If they have a workout, give specific guidance (pace zones, effort level, focus points)
-5. One specific, actionable health experiment to try today — your client loves trying new things! \
-Rotate across: supplements (with exact dosage and timing), sleep hacks, nutrition timing, \
-morning routines, breathing techniques, cold/heat exposure, mobility work, stress management. \
-Be concrete: "Try X at Y time" not "consider doing X".
-6. An encouraging observation about their consistency or progress
+5. **Today's supplement protocol**: Tell them exactly what to take and when today, from their supplement stack. \
+Adjust based on their schedule (training day vs rest day, morning workout vs evening). \
+For example: "With breakfast: Multi + K2D3 + Iron + B-Complex. After your run: Creatine + Collagen with OJ. Before bed: Magnesium."
+6. One specific, actionable health experiment to try today — your client loves trying new things! \
+Rotate across: sleep hacks, nutrition timing, morning routines, breathing techniques, \
+cold/heat exposure, mobility work, stress management. Be concrete: "Try X at Y time" not "consider doing X".
+7. An encouraging observation about their consistency or progress
 
-Keep it conversational, warm, and under 300 words. This should feel like a message from a coach who truly knows them and is optimizing their long-term health."""
+Keep it conversational, warm, and under 350 words. This should feel like a message from a coach who truly knows them and is optimizing their long-term health."""

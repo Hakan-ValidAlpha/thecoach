@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, DailyHealth, BodyComposition } from "@/lib/api";
+import { api, DailyHealth, BodyComposition, RunningStats, TRAINING_TYPES } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { formatSleepDuration } from "@/lib/format";
+import { formatSleepDuration, formatPace } from "@/lib/format";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   LineChart, Line, BarChart, Bar, AreaChart, Area,
@@ -12,9 +12,10 @@ import {
 } from "recharts";
 
 type Range = 7 | 14 | 30 | 90;
-type Tab = "recovery" | "sleep" | "body";
+type Tab = "running" | "recovery" | "sleep" | "body";
 
 const TABS: { value: Tab; label: string }[] = [
+  { value: "running", label: "Running" },
   { value: "recovery", label: "Heart & Recovery" },
   { value: "sleep", label: "Sleep" },
   { value: "body", label: "Body & Activity" },
@@ -251,12 +252,212 @@ function BodyCompChart({ data }: { data: BodyComposition[] }) {
   );
 }
 
+const TRAINING_TYPE_COLORS: Record<string, string> = {
+  easy_run: "#059669",
+  long_run: "#3b82f6",
+  tempo_run: "#f59e0b",
+  interval_run: "#ef4444",
+  hill_repeats: "#8b5cf6",
+  unlabeled: "#9ca3af",
+};
+
+function trainingTypeLabel(key: string): string {
+  const found = TRAINING_TYPES.find((t) => t.value === key);
+  if (found) return found.label;
+  return key === "unlabeled" ? "Unlabeled" : key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatPaceShort(minPerKm: number | null): string {
+  if (!minPerKm) return "—";
+  const mins = Math.floor(minPerKm);
+  const secs = Math.round((minPerKm - mins) * 60);
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+function RunningTypeCards({ stats }: { stats: RunningStats }) {
+  const types = Object.entries(stats.type_stats).sort((a, b) => b[1].count - a[1].count);
+  if (types.length === 0) return <p className="text-muted-foreground">No running data yet.</p>;
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {types.map(([type, s]) => (
+        <Card key={type}>
+          <CardHeader className="pb-2">
+            <div className="flex items-center gap-2">
+              <span
+                className="inline-block w-3 h-3 rounded-full"
+                style={{ backgroundColor: TRAINING_TYPE_COLORS[type] || "#6b7280" }}
+              />
+              <CardTitle className="text-sm font-semibold">{trainingTypeLabel(type)}</CardTitle>
+              <span className="ml-auto text-xs text-muted-foreground">{s.count} runs</span>
+            </div>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+            <div className="text-muted-foreground">Avg Pace</div>
+            <div className="text-right font-medium">{formatPace(s.avg_pace)}</div>
+            <div className="text-muted-foreground">Avg HR</div>
+            <div className="text-right font-medium">{s.avg_hr ? `${s.avg_hr} bpm` : "—"}</div>
+            <div className="text-muted-foreground">Avg Distance</div>
+            <div className="text-right font-medium">{s.avg_distance_km ? `${s.avg_distance_km} km` : "—"}</div>
+            <div className="text-muted-foreground">Avg Duration</div>
+            <div className="text-right font-medium">{s.avg_duration_min ? `${s.avg_duration_min} min` : "—"}</div>
+            <div className="text-muted-foreground">Avg Cadence</div>
+            <div className="text-right font-medium">{s.avg_cadence ? `${s.avg_cadence} spm` : "—"}</div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function RacePredictions({ stats }: { stats: RunningStats }) {
+  if (!stats.predictions) return null;
+  const { based_on, races } = stats.predictions;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Race Time Predictions</CardTitle>
+        <p className="text-xs text-muted-foreground">
+          Based on: {based_on.name} — {based_on.distance_km} km in {based_on.time} ({formatPaceShort(based_on.pace)} /km) on {based_on.date}
+        </p>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {races.map((race) => (
+            <div key={race.name} className="rounded-lg border border-border p-3 text-center">
+              <div className="text-xs text-muted-foreground mb-1">{race.name}</div>
+              <div className="text-lg font-bold">{race.predicted_time}</div>
+              <div className="text-xs text-muted-foreground">{formatPaceShort(race.predicted_pace)} /km</div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function RunningTrendCharts({ stats }: { stats: RunningStats }) {
+  const { timeline } = stats;
+  if (timeline.length === 0) return null;
+
+  const types = [...new Set(timeline.map((t) => t.training_type))];
+
+  // Reshape data: each row has date + one column per type for pace/hr
+  // Use index to keep entries unique (same date can have multiple runs)
+  const paceData = timeline
+    .filter((t) => t.pace != null)
+    .map((t, i) => ({
+      idx: i,
+      date: t.date,
+      [`pace_${t.training_type}`]: t.pace,
+    }));
+
+  const hrData = timeline
+    .filter((t) => t.hr != null)
+    .map((t, i) => ({
+      idx: i,
+      date: t.date,
+      [`hr_${t.training_type}`]: t.hr,
+    }));
+
+  return (
+    <>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Pace Over Time</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={280}>
+            <LineChart data={paceData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" />
+              <XAxis dataKey="date" fontSize={11} tickLine={false} axisLine={false} tickFormatter={shortDate} />
+              <YAxis
+                fontSize={11}
+                tickLine={false}
+                axisLine={false}
+                reversed
+                domain={["dataMin - 0.3", "dataMax + 0.3"]}
+                tickFormatter={(v) => formatPaceShort(v)}
+              />
+              <Tooltip
+                labelFormatter={shortDate}
+                formatter={(value: number, name: string) => {
+                  const type = name.replace("pace_", "");
+                  return [formatPaceShort(value) + " /km", trainingTypeLabel(type)];
+                }}
+                contentStyle={{ borderRadius: "8px", border: "1px solid #e5e5e5", fontSize: "13px" }}
+              />
+              {types.map((type) => (
+                <Line
+                  key={type}
+                  dataKey={`pace_${type}`}
+                  stroke={TRAINING_TYPE_COLORS[type] || "#6b7280"}
+                  strokeWidth={0}
+                  dot={{ r: 4, fill: TRAINING_TYPE_COLORS[type] || "#6b7280", strokeWidth: 0 }}
+                  connectNulls={false}
+                  name={`pace_${type}`}
+                  isAnimationActive={false}
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+          <div className="mt-2 flex flex-wrap gap-3 justify-center text-xs text-muted-foreground">
+            {types.map((type) => (
+              <span key={type} className="flex items-center gap-1">
+                <span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: TRAINING_TYPE_COLORS[type] || "#6b7280" }} />
+                {trainingTypeLabel(type)}
+              </span>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Heart Rate Over Time</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={280}>
+            <LineChart data={hrData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" />
+              <XAxis dataKey="date" fontSize={11} tickLine={false} axisLine={false} tickFormatter={shortDate} />
+              <YAxis fontSize={11} tickLine={false} axisLine={false} unit=" bpm" />
+              <Tooltip
+                labelFormatter={shortDate}
+                formatter={(value: number, name: string) => {
+                  const type = name.replace("hr_", "");
+                  return [`${value} bpm`, trainingTypeLabel(type)];
+                }}
+                contentStyle={{ borderRadius: "8px", border: "1px solid #e5e5e5", fontSize: "13px" }}
+              />
+              {types.map((type) => (
+                <Line
+                  key={type}
+                  dataKey={`hr_${type}`}
+                  stroke={TRAINING_TYPE_COLORS[type] || "#6b7280"}
+                  strokeWidth={0}
+                  dot={{ r: 4, fill: TRAINING_TYPE_COLORS[type] || "#6b7280", strokeWidth: 0 }}
+                  connectNulls={false}
+                  name={`hr_${type}`}
+                  isAnimationActive={false}
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+    </>
+  );
+}
+
 export default function StatsPage() {
   const [health, setHealth] = useState<DailyHealth[]>([]);
   const [bodyComp, setBodyComp] = useState<BodyComposition[]>([]);
+  const [runningStats, setRunningStats] = useState<RunningStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [range, setRange] = useState<Range>(30);
-  const [tab, setTab] = useState<Tab>("recovery");
+  const [tab, setTab] = useState<Tab>("running");
 
   useEffect(() => {
     setLoading(true);
@@ -267,10 +468,12 @@ export default function StatsPage() {
     Promise.all([
       api.getHealthDaily({ start_date: startStr, limit: 365 }),
       api.getBodyComposition({ days: range }),
+      api.getRunningStats(range),
     ])
-      .then(([h, b]) => {
+      .then(([h, b, r]) => {
         setHealth(h);
         setBodyComp(b);
+        setRunningStats(r);
       })
       .finally(() => setLoading(false));
   }, [range]);
@@ -344,6 +547,18 @@ export default function StatsPage() {
         <p className="text-muted-foreground">No data yet. Sync your Garmin data to get started.</p>
       ) : (
         <>
+          {tab === "running" && runningStats && (
+            <div className="space-y-4">
+              <RacePredictions stats={runningStats} />
+              <RunningTypeCards stats={runningStats} />
+              <RunningTrendCharts stats={runningStats} />
+            </div>
+          )}
+
+          {tab === "running" && !runningStats && !loading && (
+            <p className="text-muted-foreground">No running data yet. Sync your Garmin data to get started.</p>
+          )}
+
           {tab === "recovery" && (
             <div className="grid gap-4 md:grid-cols-2">
               <MetricChart title="Resting Heart Rate" data={chartData} dataKey="resting_hr" color="#ef4444" unit=" bpm" type="line" />

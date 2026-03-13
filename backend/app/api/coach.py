@@ -190,14 +190,32 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     # Add tool-use instruction to system prompt for chat
     chat_system = system_prompt + """
 
-You have tools available to modify the training plan. \
-You can create, move, skip, or delete workouts. When you use a tool, explain what you did naturally in your response.
+You have tools available to modify the training plan and generate complete training plans. \
+When you use a tool, explain what you did naturally in your response.
 
 WHEN TO USE TOOLS:
 - When the user explicitly asks for a change (e.g., "add a run tomorrow", "skip today's workout")
 - When the user tells you how they feel and it should affect their training (e.g., "I'm exhausted" → suggest skipping or replacing a hard workout)
 - When recommending a workout as part of your coaching advice — create it directly so they don't have to do it manually
-- Always explain WHY you're making the change, referencing their data or what they told you"""
+- When the user asks you to create/generate a training plan — use generate_training_plan to build a complete periodized plan
+- Always explain WHY you're making the change, referencing their data or what they told you
+
+TRAINING PLAN GENERATION:
+When asked to create a training plan, use the generate_training_plan tool. Design the plan based on:
+1. Their current fitness level (recent paces, weekly volume, training history)
+2. Their recovery data (HRV, sleep, body battery trends)
+3. Their goal (race, general fitness, longevity)
+4. Training science: 80/20 polarized, progressive overload, deload weeks, proper periodization
+5. Use their ESTIMATED TRAINING PACES to set appropriate workout paces
+6. Include Garmin workout steps for every workout so they sync to their watch
+7. Start from next Monday (or their requested date) to keep weeks clean
+8. This will archive their current plan and create a fresh one
+
+IMPORTANT RULES:
+- Use generate_training_plan ONLY ONCE per request — it creates the entire plan in one call
+- NEVER create duplicate workouts — each date should have at most ONE workout
+- When modifying existing workouts, always reference the workout [ID:xxx] shown in the data
+- Workout IDs are shown in square brackets like [ID:42] in the training data above"""
 
     client = anthropic.Anthropic(api_key=api_key)
 
@@ -220,7 +238,7 @@ WHEN TO USE TOOLS:
         full_response = ""
         changes = []
         messages = list(claude_messages)
-        max_iterations = 5
+        max_iterations = 8
 
         try:
             for iteration in range(max_iterations):
@@ -231,7 +249,7 @@ WHEN TO USE TOOLS:
 
                 with client.messages.stream(
                     model="claude-sonnet-4-20250514",
-                    max_tokens=2048,
+                    max_tokens=16000,
                     system=chat_system,
                     tools=COACH_TOOLS,
                     messages=messages,

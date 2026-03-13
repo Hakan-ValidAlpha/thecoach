@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import async_session
 from app.models.briefing import DailyBriefing
 from app.models.settings import Settings as DBSettings
-from app.models.training import TrainingPlan, PlannedWorkout
+from app.models.training import TrainingPlan, TrainingPhase, PlannedWorkout
 from app.config import settings as app_settings
 from app.services.coach_context import build_training_context, build_system_prompt
 from app.services.garmin_calendar_sync import reschedule_garmin_workout, create_and_schedule_garmin_workout
@@ -119,6 +119,111 @@ Example for intervals (1.5km warmup, 4x400m at 5:30/km with 60s rest, 500m coold
                 "reason": {"type": "string"},
             },
             "required": ["workout_id", "reason"],
+        },
+    },
+    {
+        "name": "generate_training_plan",
+        "description": """Generate a complete periodized training plan with phases and all workouts.
+This creates a new training plan, archives any existing active plan, and populates it with structured workouts that sync to Garmin.
+
+Use this when the athlete asks you to create a training plan. Analyze their recent training data, pace zones,
+recovery metrics, and goals to build an optimal periodized plan.
+
+PLAN DESIGN PRINCIPLES:
+- 80/20 polarized: ~80% easy (Zone 1-2), ~20% quality (Zone 3-5)
+- Progressive overload: increase weekly volume ~5-10% per week within a phase
+- Every 3-4 weeks include a recovery/deload week (~60-70% of peak volume)
+- Long run should be 25-30% of weekly volume, capped at reasonable duration for fitness level
+- For beginners: 3-4 runs/week. Intermediate: 4-5. Advanced: 5-6.
+- Include rest days between hard sessions (easy run or rest day after intervals/tempo)
+- Phase structure: Base → Build → Peak → Taper (→ Race if applicable)
+- Base phase: mostly easy running, build aerobic foundation
+- Build phase: introduce tempo and intervals, increase volume
+- Peak phase: highest volume and intensity
+- Taper phase: reduce volume 40-60%, maintain some intensity
+
+WORKOUT DESIGN:
+- Every workout MUST include garmin_steps for Garmin watch sync
+- Easy runs: single warmup step at easy pace
+- Long runs: warmup step at easy pace, possibly with a tempo finish
+- Tempo runs: warmup + tempo interval + cooldown
+- Intervals: warmup + repeat block (intervals + recovery) + cooldown
+- Always include warmup and cooldown for quality sessions
+
+PACING:
+- Use the athlete's ESTIMATED TRAINING PACES from their data
+- Easy runs: Zone 2 pace
+- Long runs: Zone 1-2 pace
+- Tempo: Zone 3 pace
+- Threshold intervals: Zone 4 pace
+- VO2max intervals: Zone 5 pace
+- Recovery/warmup/cooldown: Zone 1 pace""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "plan_name": {"type": "string", "description": "Name for the plan (e.g., 'Spring Base Building', '10K Race Prep')"},
+                "goal": {"type": "string", "description": "Plan goal description"},
+                "goal_date": {"type": "string", "description": "Target date ISO YYYY-MM-DD (optional, e.g., race date)"},
+                "start_date": {"type": "string", "description": "Plan start date ISO YYYY-MM-DD"},
+                "end_date": {"type": "string", "description": "Plan end date ISO YYYY-MM-DD"},
+                "runs_per_week": {"type": "integer", "description": "Target number of runs per week (3-6)"},
+                "phases": {
+                    "type": "array",
+                    "description": "Training phases with date ranges",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "phase_type": {"type": "string", "enum": ["base", "build", "peak", "taper", "recovery", "race"]},
+                            "start_date": {"type": "string", "description": "ISO YYYY-MM-DD"},
+                            "end_date": {"type": "string", "description": "ISO YYYY-MM-DD"},
+                            "description": {"type": "string"},
+                        },
+                        "required": ["name", "phase_type", "start_date", "end_date"],
+                    },
+                },
+                "workouts": {
+                    "type": "array",
+                    "description": "All workouts in the plan",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "scheduled_date": {"type": "string", "description": "ISO YYYY-MM-DD"},
+                            "workout_type": {
+                                "type": "string",
+                                "enum": ["easy_run", "long_run", "tempo_run", "interval_run",
+                                         "hill_repeats", "cross_training", "walk", "rest"],
+                            },
+                            "title": {"type": "string"},
+                            "description": {"type": "string"},
+                            "target_distance_meters": {"type": "number"},
+                            "target_duration_seconds": {"type": "number"},
+                            "target_pace_min_per_km": {"type": "number"},
+                            "garmin_steps": {
+                                "type": "array",
+                                "description": "Garmin workout steps (REQUIRED for watch sync)",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {"type": "string", "enum": ["warmup", "cooldown", "interval", "rest", "recovery", "repeat"]},
+                                        "duration_seconds": {"type": "number"},
+                                        "distance_meters": {"type": "number"},
+                                        "pace_low": {"type": "number", "description": "Slower pace in min/km"},
+                                        "pace_high": {"type": "number", "description": "Faster pace in min/km"},
+                                        "description": {"type": "string"},
+                                        "iterations": {"type": "integer"},
+                                        "steps": {"type": "array", "items": {"type": "object"}},
+                                    },
+                                    "required": ["type"],
+                                },
+                            },
+                        },
+                        "required": ["scheduled_date", "workout_type", "title", "garmin_steps"],
+                    },
+                },
+                "reason": {"type": "string", "description": "Explanation of the plan design rationale"},
+            },
+            "required": ["plan_name", "goal", "start_date", "end_date", "runs_per_week", "phases", "workouts", "reason"],
         },
     },
 ]
@@ -235,11 +340,115 @@ async def _execute_skip_workout(db: AsyncSession, inputs: dict, garmin_client=No
     return {"success": True, "summary": f"Skipped '{workout.title}'"}
 
 
+async def _execute_generate_training_plan(db: AsyncSession, inputs: dict, garmin_client=None) -> dict:
+    """Generate a complete training plan with phases and workouts."""
+    # Archive any existing active plans
+    result = await db.execute(
+        select(TrainingPlan).where(TrainingPlan.status == "active")
+    )
+    for old_plan in result.scalars().all():
+        old_plan.status = "archived"
+    await db.flush()
+
+    # Create the plan
+    plan = TrainingPlan(
+        name=inputs["plan_name"],
+        goal=inputs.get("goal"),
+        goal_date=date.fromisoformat(inputs["goal_date"]) if inputs.get("goal_date") else None,
+        start_date=date.fromisoformat(inputs["start_date"]),
+        end_date=date.fromisoformat(inputs["end_date"]),
+        status="active",
+    )
+    db.add(plan)
+    await db.flush()
+
+    # Create phases
+    phase_map = {}  # date range → phase_id for workout assignment
+    for i, phase_data in enumerate(inputs.get("phases", [])):
+        phase = TrainingPhase(
+            plan_id=plan.id,
+            name=phase_data["name"],
+            phase_type=phase_data["phase_type"],
+            start_date=date.fromisoformat(phase_data["start_date"]),
+            end_date=date.fromisoformat(phase_data["end_date"]),
+            order_index=i,
+            description=phase_data.get("description"),
+        )
+        db.add(phase)
+        await db.flush()
+        phase_map[(phase.start_date, phase.end_date)] = phase.id
+
+    # Create workouts
+    workout_count = 0
+    garmin_synced = 0
+    garmin_errors = 0
+    workouts_data = inputs.get("workouts", [])
+
+    for w_data in workouts_data:
+        w_date = date.fromisoformat(w_data["scheduled_date"])
+
+        # Find matching phase
+        phase_id = None
+        for (ps, pe), pid in phase_map.items():
+            if ps <= w_date <= pe:
+                phase_id = pid
+                break
+
+        workout = PlannedWorkout(
+            plan_id=plan.id,
+            phase_id=phase_id,
+            scheduled_date=w_date,
+            workout_type=w_data["workout_type"],
+            title=w_data["title"],
+            description=w_data.get("description"),
+            target_distance_meters=w_data.get("target_distance_meters"),
+            target_duration_seconds=w_data.get("target_duration_seconds"),
+            target_pace_min_per_km=w_data.get("target_pace_min_per_km"),
+            status="planned",
+        )
+        db.add(workout)
+        await db.flush()
+        workout_count += 1
+
+        # Sync to Garmin (skip rest days and past dates)
+        if garmin_client and w_data["workout_type"] != "rest" and w_date >= date.today():
+            try:
+                garmin_steps = w_data.get("garmin_steps")
+                garmin_result = await create_and_schedule_garmin_workout(
+                    garmin_client, workout, garmin_steps=garmin_steps
+                )
+                if garmin_result.get("garmin_workout_id"):
+                    workout.garmin_workout_id = garmin_result["garmin_workout_id"]
+                if garmin_result.get("garmin_schedule_id"):
+                    workout.garmin_schedule_id = garmin_result["garmin_schedule_id"]
+                await db.flush()
+                garmin_synced += 1
+            except Exception as e:
+                garmin_errors += 1
+                logger.warning(f"Garmin sync failed for workout '{workout.title}' on {w_date}: {e}")
+
+    summary = f"Created plan '{plan.name}' with {len(inputs.get('phases', []))} phases and {workout_count} workouts"
+    if garmin_synced:
+        summary += f" ({garmin_synced} synced to Garmin"
+        if garmin_errors:
+            summary += f", {garmin_errors} sync errors"
+        summary += ")"
+
+    return {
+        "success": True,
+        "summary": summary,
+        "plan_id": plan.id,
+        "workout_count": workout_count,
+        "garmin_synced": garmin_synced,
+    }
+
+
 TOOL_EXECUTORS = {
     "create_workout": _execute_create_workout,
     "move_workout": _execute_move_workout,
     "delete_workout": _execute_delete_workout,
     "skip_workout": _execute_skip_workout,
+    "generate_training_plan": _execute_generate_training_plan,
 }
 
 

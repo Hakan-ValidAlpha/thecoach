@@ -243,6 +243,7 @@ export interface AppSettings {
   last_withings_sync: string | null;
   user_name: string | null;
   age: number | null;
+  gender: string | null;
   running_experience: string | null;
   primary_goal: string | null;
   goal_race: string | null;
@@ -259,6 +260,7 @@ export interface SettingsUpdate {
   anthropic_api_key?: string | null;
   user_name?: string | null;
   age?: number | null;
+  gender?: string | null;
   running_experience?: string | null;
   primary_goal?: string | null;
   goal_race?: string | null;
@@ -285,6 +287,72 @@ export interface Briefing {
   status?: string;
 }
 
+export interface RunningTypeStats {
+  count: number;
+  avg_pace: number | null;
+  avg_hr: number | null;
+  avg_distance_km: number | null;
+  avg_duration_min: number | null;
+  avg_cadence: number | null;
+}
+
+export interface RunningTimelineEntry {
+  date: string;
+  training_type: string;
+  pace: number | null;
+  hr: number | null;
+  distance_km: number | null;
+  duration_min: number | null;
+  cadence: number | null;
+  vo2max: number | null;
+}
+
+export interface RacePrediction {
+  name: string;
+  distance_km: number;
+  predicted_time: string;
+  predicted_pace: number;
+}
+
+export interface RunningStats {
+  type_stats: Record<string, RunningTypeStats>;
+  timeline: RunningTimelineEntry[];
+  predictions: {
+    based_on: {
+      name: string;
+      date: string;
+      distance_km: number;
+      time: string;
+      pace: number;
+    };
+    races: RacePrediction[];
+  } | null;
+}
+
+export interface FitnessAgeMetric {
+  name: string;
+  value: number;
+  unit: string;
+  expected: number;
+  rating: "good" | "neutral" | "poor";
+}
+
+export interface FitnessAgeDomain {
+  domain: string;
+  age: number;
+  weight: number;
+  metrics: FitnessAgeMetric[];
+  source: string;
+}
+
+export interface FitnessAgeData {
+  fitness_age: number;
+  actual_age: number;
+  difference: number;
+  gender: string;
+  domains: FitnessAgeDomain[];
+}
+
 // API functions
 export const api = {
   getDashboard: () => fetchApi<DashboardData>("/dashboard"),
@@ -309,6 +377,9 @@ export const api = {
 
   getActivity: (id: number) => fetchApi<ActivityDetail>(`/activities/${id}`),
 
+  getRunningStats: (days = 90) =>
+    fetchApi<RunningStats>(`/activities/running-stats?days=${days}`),
+
   updateTrainingType: (id: number, training_type: string | null) =>
     fetchApi<Activity>(`/activities/${id}/training-type`, {
       method: "PATCH",
@@ -330,6 +401,8 @@ export const api = {
     const qs = query.toString();
     return fetchApi<DailyHealth[]>(`/health/daily${qs ? `?${qs}` : ""}`);
   },
+
+  getFitnessAge: () => fetchApi<FitnessAgeData>("/fitness-age"),
 
   getBodyComposition: (params?: { limit?: number; days?: number }) => {
     const query = new URLSearchParams();

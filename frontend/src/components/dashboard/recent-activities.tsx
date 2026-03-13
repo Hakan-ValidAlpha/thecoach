@@ -37,29 +37,29 @@ export function RecentActivities({ activities }: { activities: Activity[] }) {
             <Link
               key={a.id}
               href={`/activities/${a.id}`}
-              className="flex items-center justify-between rounded-lg border border-border p-3 transition-colors hover:bg-muted"
+              className="block rounded-lg border border-border p-3 transition-colors hover:bg-muted"
             >
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{a.name || "Untitled"}</span>
-                  <Badge variant="secondary">{activityTypeLabel(a.activity_type)}</Badge>
-                </div>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="font-medium truncate">{a.name || "Untitled"}</span>
+                <Badge variant="secondary" className="shrink-0">{activityTypeLabel(a.activity_type)}</Badge>
+              </div>
+              <div className="flex items-center justify-between mt-1.5">
                 <span className="text-sm text-muted-foreground">
                   {formatDate(a.started_at)} at {formatTime(a.started_at)}
                 </span>
-              </div>
-              <div className="flex gap-6 text-right text-sm">
-                <div>
-                  <p className="font-medium">{formatDistance(a.distance_meters)}</p>
-                  <p className="text-muted-foreground">Distance</p>
-                </div>
-                <div>
-                  <p className="font-medium">{formatDuration(a.duration_seconds)}</p>
-                  <p className="text-muted-foreground">Duration</p>
-                </div>
-                <div>
-                  <p className="font-medium">{formatPace(a.avg_pace_min_per_km)}</p>
-                  <p className="text-muted-foreground">Pace</p>
+                <div className="flex gap-4 text-right text-sm">
+                  <div>
+                    <p className="font-medium">{formatDistance(a.distance_meters)}</p>
+                    <p className="text-[11px] text-muted-foreground">Distance</p>
+                  </div>
+                  <div>
+                    <p className="font-medium">{formatDuration(a.duration_seconds)}</p>
+                    <p className="text-[11px] text-muted-foreground">Duration</p>
+                  </div>
+                  <div>
+                    <p className="font-medium">{formatPace(a.avg_pace_min_per_km)}</p>
+                    <p className="text-[11px] text-muted-foreground">Pace</p>
+                  </div>
                 </div>
               </div>
             </Link>

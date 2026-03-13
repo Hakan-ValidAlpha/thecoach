@@ -110,31 +110,46 @@ async def sync_garmin_calendar(
             db.add(plan)
             await db.flush()
 
-        # Get existing workouts by garmin workout_id (stored in description as marker)
+        # Dedup across ALL plans (not just this one) — prevents reimporting
+        # workouts that already exist in coach-created plans
         existing_result = await db.execute(
-            select(PlannedWorkout).where(PlannedWorkout.plan_id == plan.id)
+            select(PlannedWorkout).where(
+                PlannedWorkout.plan_id.in_(
+                    select(TrainingPlan.id).where(TrainingPlan.status == "active")
+                )
+            )
         )
         existing = existing_result.scalars().all()
 
-        # Index existing by (date, title) for dedup
-        existing_keys = {}
+        # Index by multiple keys for robust dedup
+        existing_by_date_title: dict[tuple, PlannedWorkout] = {}
+        existing_by_schedule_id: dict[int, PlannedWorkout] = {}
+        existing_by_workout_id_date: dict[tuple, PlannedWorkout] = {}
         for w in existing:
-            key = (str(w.scheduled_date), w.title)
-            existing_keys[key] = w
+            existing_by_date_title[(str(w.scheduled_date), w.title)] = w
+            if w.garmin_schedule_id:
+                existing_by_schedule_id[w.garmin_schedule_id] = w
+            if w.garmin_workout_id:
+                existing_by_workout_id_date[(w.garmin_workout_id, str(w.scheduled_date))] = w
 
         for cal_w in cal_workouts:
             w_date = cal_w["date"]
             w_title = cal_w.get("title", "Workout")
             w_workout_id = cal_w.get("workoutId")
+            w_schedule_id = cal_w.get("id")
 
-            key = (w_date, w_title)
+            # Check all dedup keys — skip if workout exists in ANY active plan
+            existing_w = (
+                (w_schedule_id and existing_by_schedule_id.get(w_schedule_id))
+                or (w_workout_id and existing_by_workout_id_date.get((w_workout_id, w_date)))
+                or existing_by_date_title.get((w_date, w_title))
+            )
 
-            if key in existing_keys:
-                # Update Garmin IDs if missing
-                existing_w = existing_keys[key]
+            if existing_w:
+                # Update Garmin IDs if missing on existing workout
                 if not existing_w.garmin_workout_id and w_workout_id:
                     existing_w.garmin_workout_id = w_workout_id
-                    existing_w.garmin_schedule_id = cal_w.get("id")
+                    existing_w.garmin_schedule_id = w_schedule_id
                     result["workouts_updated"] += 1
                 continue
 

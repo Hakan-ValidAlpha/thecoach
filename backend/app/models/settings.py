@@ -24,6 +24,7 @@ class Settings(Base):
     # User profile / coaching
     user_name: Mapped[str | None] = mapped_column(String(100))
     age: Mapped[int | None] = mapped_column(Integer)
+    gender: Mapped[str | None] = mapped_column(String(10))  # male, female
     running_experience: Mapped[str | None] = mapped_column(String(50))  # beginner, intermediate, advanced
     primary_goal: Mapped[str | None] = mapped_column(String(255))
     goal_race: Mapped[str | None] = mapped_column(String(255))

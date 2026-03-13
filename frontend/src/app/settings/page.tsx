@@ -35,6 +35,7 @@ export default function SettingsPage() {
   const [primaryGoal, setPrimaryGoal] = useState("");
   const [goalRace, setGoalRace] = useState("");
   const [goalRaceDate, setGoalRaceDate] = useState("");
+  const [gender, setGender] = useState("");
   const [injuriesNotes, setInjuriesNotes] = useState("");
 
   useEffect(() => {
@@ -47,6 +48,7 @@ export default function SettingsPage() {
         setWithingsClientId(s.withings_client_id || "");
         setUserName(s.user_name || "");
         setAge(s.age?.toString() || "");
+        setGender(s.gender || "");
         setRunningExperience(s.running_experience || "");
         setPrimaryGoal(s.primary_goal || "");
         setGoalRace(s.goal_race || "");
@@ -129,6 +131,7 @@ export default function SettingsPage() {
                 handleSave("Profile", {
                   user_name: userName || null,
                   age: age ? parseInt(age) : null,
+                  gender: gender || null,
                   height_cm: heightCm ? parseFloat(heightCm) : null,
                   running_experience: runningExperience || null,
                   primary_goal: primaryGoal || null,
@@ -164,6 +167,18 @@ export default function SettingsPage() {
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Gender</label>
+                  <select
+                    value={gender}
+                    onChange={(e) => setGender(e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  >
+                    <option value="">Select...</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                  </select>
+                </div>
                 <div>
                   <label className="block text-sm font-medium mb-1">Height (cm)</label>
                   <input

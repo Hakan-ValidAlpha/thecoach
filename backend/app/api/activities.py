@@ -26,6 +26,127 @@ async def get_training_types():
     return TRAINING_TYPES
 
 
+@router.get("/activities/running-stats")
+async def running_stats(
+    days: int = Query(default=90, ge=7, le=365),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-training-type running stats over time + race predictions."""
+    running_types = ["running", "trail_running", "treadmill_running"]
+    start = _date_to_utc(date.today() - timedelta(days=days))
+
+    result = await db.execute(
+        select(Activity)
+        .where(
+            and_(
+                Activity.started_at >= start,
+                Activity.activity_type.in_(running_types),
+                or_(Activity.training_type.is_(None), Activity.training_type.notin_(NON_RUNNING_TRAINING_TYPES)),
+            )
+        )
+        .order_by(Activity.started_at)
+    )
+    activities = result.scalars().all()
+
+    # Group by training_type
+    by_type: dict[str, list] = defaultdict(list)
+    for a in activities:
+        tt = a.training_type or "unlabeled"
+        by_type[tt].append(a)
+
+    # Per-type averages
+    type_stats = {}
+    for tt, acts in by_type.items():
+        paces = [a.avg_pace_min_per_km for a in acts if a.avg_pace_min_per_km]
+        hrs = [a.avg_heart_rate for a in acts if a.avg_heart_rate]
+        dists = [a.distance_meters for a in acts if a.distance_meters]
+        durs = [a.duration_seconds for a in acts if a.duration_seconds]
+        cadences = [a.avg_cadence for a in acts if a.avg_cadence]
+
+        type_stats[tt] = {
+            "count": len(acts),
+            "avg_pace": round(sum(paces) / len(paces), 2) if paces else None,
+            "avg_hr": round(sum(hrs) / len(hrs), 1) if hrs else None,
+            "avg_distance_km": round(sum(dists) / len(dists) / 1000, 2) if dists else None,
+            "avg_duration_min": round(sum(durs) / len(durs) / 60, 1) if durs else None,
+            "avg_cadence": round(sum(cadences) / len(cadences), 1) if cadences else None,
+        }
+
+    # Per-activity timeline (for charts)
+    timeline = []
+    for a in activities:
+        timeline.append({
+            "date": a.started_at.date().isoformat(),
+            "training_type": a.training_type or "unlabeled",
+            "pace": a.avg_pace_min_per_km,
+            "hr": a.avg_heart_rate,
+            "distance_km": round(a.distance_meters / 1000, 2) if a.distance_meters else None,
+            "duration_min": round(a.duration_seconds / 60, 1) if a.duration_seconds else None,
+            "cadence": a.avg_cadence,
+            "vo2max": a.vo2max_estimate,
+        })
+
+    # Race time predictions using Riegel formula
+    predictions = None
+    best_efforts = [
+        a for a in activities
+        if a.distance_meters and a.distance_meters >= 1000
+        and a.duration_seconds and a.duration_seconds > 0
+        and a.avg_pace_min_per_km
+    ]
+    if best_efforts:
+        # Best vDOT proxy: normalize all efforts to 5km equivalent time
+        def vdot_proxy(a):
+            return a.duration_seconds * (5000 / a.distance_meters) ** 1.06
+
+        best = min(best_efforts, key=vdot_proxy)
+        ref_dist = best.distance_meters
+        ref_time = best.duration_seconds
+
+        def predict_time(target_dist):
+            return ref_time * (target_dist / ref_dist) ** 1.06
+
+        def fmt_time(secs):
+            h = int(secs // 3600)
+            m = int((secs % 3600) // 60)
+            s = int(secs % 60)
+            if h > 0:
+                return f"{h}:{m:02d}:{s:02d}"
+            return f"{m}:{s:02d}"
+
+        race_distances = [
+            ("5K", 5000),
+            ("10K", 10000),
+            ("Half Marathon", 21097.5),
+            ("Marathon", 42195),
+        ]
+
+        predictions = {
+            "based_on": {
+                "name": best.name,
+                "date": best.started_at.date().isoformat(),
+                "distance_km": round(ref_dist / 1000, 2),
+                "time": fmt_time(ref_time),
+                "pace": round(ref_time / 60 / (ref_dist / 1000), 2),
+            },
+            "races": [
+                {
+                    "name": name,
+                    "distance_km": round(dist / 1000, 2),
+                    "predicted_time": fmt_time(predict_time(dist)),
+                    "predicted_pace": round(predict_time(dist) / 60 / (dist / 1000), 2),
+                }
+                for name, dist in race_distances
+            ],
+        }
+
+    return JSONResponse({
+        "type_stats": type_stats,
+        "timeline": timeline,
+        "predictions": predictions,
+    })
+
+
 @router.get("/activities", response_model=list[ActivityOut])
 async def list_activities(
     activity_type: Optional[str] = None,

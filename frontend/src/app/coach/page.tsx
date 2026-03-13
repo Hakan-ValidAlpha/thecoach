@@ -96,6 +96,7 @@ const CHANGE_STYLES: Record<string, { label: string; color: string }> = {
   move_workout: { label: "Moved", color: "bg-blue-100 text-blue-800 border-blue-200" },
   skip_workout: { label: "Skipped", color: "bg-amber-100 text-amber-800 border-amber-200" },
   delete_workout: { label: "Removed", color: "bg-red-100 text-red-800 border-red-200" },
+  generate_training_plan: { label: "Plan Created", color: "bg-purple-100 text-purple-800 border-purple-200" },
 };
 
 function BriefingCard({ briefing, onDismiss, onAsk, onRegenerate, generating }: {
