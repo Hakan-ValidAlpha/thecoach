@@ -54,11 +54,17 @@ async def update_settings(
         db_settings = DBSettings(id=1)
         db.add(db_settings)
 
-    for field, value in update.model_dump(exclude_unset=True).items():
+    update_fields = update.model_dump(exclude_unset=True)
+    for field, value in update_fields.items():
         setattr(db_settings, field, value)
 
     await db.commit()
     await db.refresh(db_settings)
+
+    # Invalidate Garmin singleton if credentials changed
+    if "garmin_email" in update_fields or "garmin_password" in update_fields:
+        from app.services.garmin_sync import invalidate_garmin_client
+        await invalidate_garmin_client()
 
     # Return merged view
     garmin_email = db_settings.garmin_email or app_settings.garmin_email or None

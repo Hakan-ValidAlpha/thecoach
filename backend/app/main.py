@@ -2,8 +2,11 @@ import hashlib
 import logging
 from contextlib import asynccontextmanager
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -19,6 +22,8 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     from app.services.daily_briefing import run_daily_briefing_pipeline
 
+    from app.services.garmin_sync import refresh_garmin_oauth2
+
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         run_daily_briefing_pipeline,
@@ -26,8 +31,14 @@ async def lifespan(app: FastAPI):
         id="daily_briefing",
         replace_existing=True,
     )
+    scheduler.add_job(
+        refresh_garmin_oauth2,
+        IntervalTrigger(minutes=50),
+        id="garmin_oauth2_refresh",
+        replace_existing=True,
+    )
     scheduler.start()
-    logger.info("Scheduler started — daily briefing at 07:30 Europe/Stockholm")
+    logger.info("Scheduler started — daily briefing at 07:30, OAuth2 refresh every 50 min")
 
     yield
 

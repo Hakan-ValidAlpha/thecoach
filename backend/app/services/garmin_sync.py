@@ -1,6 +1,9 @@
 import asyncio
 import logging
+import os
+import tempfile
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from garminconnect import Garmin
 from sqlalchemy import select
@@ -16,16 +19,136 @@ logger = logging.getLogger(__name__)
 
 # Module-level sync state
 _is_syncing = False
+_rate_limit_until: datetime | None = None  # Cooldown after 429
+_RATE_LIMIT_COOLDOWN = timedelta(minutes=30)
+
+# Singleton Garmin client + lock
+_garmin_client: Garmin | None = None
+_client_lock = asyncio.Lock()
+
+# Garth token cache directory
+_TOKEN_DIR = Path(os.environ.get("GARTH_TOKEN_DIR", Path(tempfile.gettempdir()) / "garth_tokens"))
 
 
 def is_syncing() -> bool:
     return _is_syncing
 
 
-def _get_garmin_client(email: str, password: str) -> Garmin:
-    client = Garmin(email, password)
-    client.login()
-    return client
+class GarminRateLimitError(Exception):
+    """Raised when Garmin returns 429 Too Many Requests."""
+    pass
+
+
+def _check_rate_limit_cooldown():
+    """Check if we're in a rate limit cooldown period. Never deletes tokens."""
+    global _rate_limit_until
+    if _rate_limit_until and datetime.now(timezone.utc) < _rate_limit_until:
+        remaining = (_rate_limit_until - datetime.now(timezone.utc)).seconds // 60
+        raise GarminRateLimitError(
+            f"Garmin rate limit cooldown active. Try again in ~{remaining + 1} minutes."
+        )
+    if _rate_limit_until:
+        logger.info("Rate limit cooldown expired")
+        _rate_limit_until = None
+
+
+def _set_rate_limit_cooldown():
+    """Set a cooldown period after hitting a rate limit. Never deletes tokens."""
+    global _rate_limit_until
+    _rate_limit_until = datetime.now(timezone.utc) + _RATE_LIMIT_COOLDOWN
+    logger.warning("Rate limit cooldown set until %s", _rate_limit_until)
+
+
+async def get_garmin_client(db: AsyncSession) -> Garmin:
+    """Get or create the singleton Garmin client.
+
+    - Reuses cached client across all requests (no redundant OAuth2 exchanges)
+    - Sets garth._garth_home so garth auto-saves on every token refresh
+    - Uses login(tokenstore=...) which handles load-or-fresh-login internally
+    """
+    global _garmin_client
+
+    _check_rate_limit_cooldown()
+
+    if _garmin_client is not None:
+        logger.debug("Returning cached Garmin singleton")
+        return _garmin_client
+
+    async with _client_lock:
+        # Double-check after acquiring lock
+        if _garmin_client is not None:
+            return _garmin_client
+
+        # Read credentials from DB (with env fallback)
+        from app.config import settings as app_settings
+        db_settings = await db.get(Settings, 1)
+        email = (db_settings.garmin_email if db_settings else None) or app_settings.garmin_email or ""
+        password = (db_settings.garmin_password if db_settings else None) or app_settings.garmin_password or ""
+
+        if not email or not password:
+            raise ValueError("Garmin credentials not configured. Set them in Settings.")
+
+        token_dir = str(_TOKEN_DIR)
+        _TOKEN_DIR.mkdir(parents=True, exist_ok=True)
+
+        def _init_client() -> Garmin:
+            client = Garmin(email, password)
+            # Set _garth_home BEFORE login — enables garth's built-in auto-save
+            # on every OAuth2 refresh, so we never need manual dump() calls
+            client.garth._garth_home = _TOKEN_DIR
+            client.login(tokenstore=token_dir)
+            logger.info(
+                "Garmin client initialized, display_name=%s, token_dir=%s",
+                client.display_name, token_dir,
+            )
+            return client
+
+        try:
+            _garmin_client = await asyncio.to_thread(_init_client)
+        except Exception as e:
+            if "429" in str(e):
+                _set_rate_limit_cooldown()
+                raise GarminRateLimitError(
+                    "Garmin rate limit hit during login. "
+                    "Wait 30-60 minutes before trying again."
+                )
+            raise
+
+        return _garmin_client
+
+
+async def invalidate_garmin_client():
+    """Clear the singleton client. Does NOT delete tokens on disk.
+
+    Call this on auth errors or credential changes so the next
+    get_garmin_client() creates a fresh client.
+    """
+    global _garmin_client
+    async with _client_lock:
+        _garmin_client = None
+        logger.info("Garmin singleton invalidated")
+
+
+async def refresh_garmin_oauth2():
+    """Proactive background refresh of OAuth2 token.
+
+    Called by APScheduler every 50 minutes to keep OAuth2 fresh
+    so syncs never need to trigger an exchange.
+    """
+    global _garmin_client
+    if _garmin_client is None:
+        logger.debug("No Garmin client to refresh")
+        return
+    if _rate_limit_until and datetime.now(timezone.utc) < _rate_limit_until:
+        logger.debug("Skipping OAuth2 refresh — rate limit cooldown active")
+        return
+
+    try:
+        await asyncio.to_thread(_garmin_client.garth.refresh_oauth2)
+        logger.info("Proactive OAuth2 refresh successful")
+    except Exception as e:
+        logger.warning("Proactive OAuth2 refresh failed: %s", e)
+        # Don't invalidate — the client may still work with existing tokens
 
 
 def _extract_activity(raw: dict) -> dict:
@@ -204,8 +327,6 @@ def _extract_daily_health(
 
 async def sync_garmin(
     db: AsyncSession,
-    email: str,
-    password: str,
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> SyncResult:
@@ -213,29 +334,59 @@ async def sync_garmin(
     global _is_syncing
     _is_syncing = True
     result = SyncResult()
+    client = None
 
     try:
-        client = await asyncio.to_thread(_get_garmin_client, email, password)
+        try:
+            client = await get_garmin_client(db)
+        except (GarminRateLimitError, ValueError) as e:
+            logger.error("Garmin client init failed: %s", e)
+            result.errors.append(str(e))
+            return result
 
-        # Determine date range
+        # Determine date range (3-day lookback buffer to catch missed activities)
         if not start_date:
             settings = await db.get(Settings, 1)
             if settings and settings.last_garmin_sync:
-                start_date = settings.last_garmin_sync.date()
+                start_date = settings.last_garmin_sync.date() - timedelta(days=3)
             else:
                 start_date = date.today() - timedelta(days=30)
 
         if not end_date:
             end_date = date.today()
 
-        # Sync activities
+        def _check_rate_limit(error: Exception):
+            """Raise GarminRateLimitError if this is a 429."""
+            if "429" in str(error):
+                _set_rate_limit_cooldown()
+                raise GarminRateLimitError(
+                    "Garmin rate limit hit during sync. "
+                    "Wait 30-60 minutes before trying again."
+                )
+
+        # Sync activities — with one auth retry via invalidate + re-init
         try:
-            activities = await asyncio.to_thread(
-                client.get_activities_by_date,
-                start_date.isoformat(),
-                end_date.isoformat(),
-            )
-            await asyncio.sleep(0.5)
+            try:
+                activities = await asyncio.to_thread(
+                    client.get_activities_by_date,
+                    start_date.isoformat(),
+                    end_date.isoformat(),
+                )
+            except Exception as e:
+                if "429" in str(e):
+                    _set_rate_limit_cooldown()
+                    raise
+                # Auth might be stale — invalidate singleton and retry once
+                logger.info("First API call failed (%s), invalidating client and retrying", e)
+                await invalidate_garmin_client()
+                client = await get_garmin_client(db)
+                activities = await asyncio.to_thread(
+                    client.get_activities_by_date,
+                    start_date.isoformat(),
+                    end_date.isoformat(),
+                )
+
+            await asyncio.sleep(1)
 
             for raw in activities:
                 garmin_id = raw.get("activityId")
@@ -262,7 +413,7 @@ async def sync_garmin(
                             details = await asyncio.to_thread(
                                 client.get_activity_splits, garmin_id
                             )
-                            await asyncio.sleep(0.5)
+                            await asyncio.sleep(1)
                             laps = None
                             if isinstance(details, dict):
                                 laps = details.get("lapDTOs", [])
@@ -272,6 +423,7 @@ async def sync_garmin(
                                 for split_data in _extract_splits(activity.id, laps):
                                     db.add(ActivitySplit(**split_data))
                         except Exception as e:
+                            _check_rate_limit(e)
                             logger.warning(f"Failed to fetch splits for {garmin_id}: {e}")
 
                         # Fetch timeseries + GPS data
@@ -279,36 +431,44 @@ async def sync_garmin(
                             activity_details = await asyncio.to_thread(
                                 client.get_activity_details, garmin_id
                             )
-                            await asyncio.sleep(0.5)
+                            await asyncio.sleep(1)
                             ts, poly = _extract_timeseries(activity_details)
                             activity.timeseries_json = ts
                             activity.polyline_json = poly
                         except Exception as e:
+                            _check_rate_limit(e)
                             logger.warning(f"Failed to fetch timeseries for {garmin_id}: {e}")
 
                     result.activities_synced += 1
+                except GarminRateLimitError:
+                    raise
                 except Exception as e:
                     logger.warning(f"Skipping activity {garmin_id}: {e}")
 
+        except GarminRateLimitError:
+            raise
         except Exception as e:
+            _check_rate_limit(e)
             logger.error(f"Failed to sync activities: {e}")
             result.errors.append(f"Activities: {str(e)}")
 
         # Sync daily health metrics
+        # Only fetch readiness/training_status for recent days to reduce API calls
+        recent_cutoff = date.today() - timedelta(days=2)
         current = start_date
         while current <= end_date:
             try:
                 stats = await asyncio.to_thread(
                     client.get_stats, current.isoformat()
                 )
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1)
 
                 sleep_data = None
                 try:
                     sleep_data = await asyncio.to_thread(
                         client.get_sleep_data, current.isoformat()
                     )
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1)
                 except Exception:
                     pass
 
@@ -318,29 +478,31 @@ async def sync_garmin(
                     hrv_data = await asyncio.to_thread(
                         client.get_hrv_data, current.isoformat()
                     )
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1)
                 except Exception:
                     pass
 
-                # Fetch training readiness
+                # Fetch training readiness (recent days only)
                 readiness_data = None
-                try:
-                    readiness_data = await asyncio.to_thread(
-                        client.get_training_readiness, current.isoformat()
-                    )
-                    await asyncio.sleep(0.5)
-                except Exception:
-                    pass
+                if current >= recent_cutoff:
+                    try:
+                        readiness_data = await asyncio.to_thread(
+                            client.get_training_readiness, current.isoformat()
+                        )
+                        await asyncio.sleep(1)
+                    except Exception:
+                        pass
 
-                # Fetch training status (for VO2max)
+                # Fetch training status/VO2max (recent days only)
                 training_status = None
-                try:
-                    training_status = await asyncio.to_thread(
-                        client.get_training_status, current.isoformat()
-                    )
-                    await asyncio.sleep(0.5)
-                except Exception:
-                    pass
+                if current >= recent_cutoff:
+                    try:
+                        training_status = await asyncio.to_thread(
+                            client.get_training_status, current.isoformat()
+                        )
+                        await asyncio.sleep(1)
+                    except Exception:
+                        pass
 
                 health_data = _extract_daily_health(
                     current, stats, sleep_data, hrv_data, readiness_data, training_status
@@ -359,7 +521,10 @@ async def sync_garmin(
 
                 result.health_days_synced += 1
 
+            except GarminRateLimitError:
+                raise
             except Exception as e:
+                _check_rate_limit(e)
                 logger.warning(f"Failed to sync health for {current}: {e}")
                 result.errors.append(f"Health {current}: {str(e)}")
 
@@ -372,7 +537,7 @@ async def sync_garmin(
                 start_date.isoformat(),
                 end_date.isoformat(),
             )
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
 
             if body_data and isinstance(body_data, dict):
                 weight_list = body_data.get("dateWeightList", [])
@@ -407,23 +572,45 @@ async def sync_garmin(
                         raw_json=entry,
                     ))
 
+        except GarminRateLimitError:
+            raise
         except Exception as e:
+            _check_rate_limit(e)
             logger.warning(f"Failed to sync body composition: {e}")
             result.errors.append(f"Body composition: {str(e)}")
 
-        # Update last sync timestamp
-        settings = await db.get(Settings, 1)
-        if not settings:
-            settings = Settings(id=1)
-            db.add(settings)
-        settings.garmin_email = email
-        settings.last_garmin_sync = datetime.now(timezone.utc)
-        await db.commit()
+        # Update last sync timestamp only if we actually synced something
+        if result.activities_synced > 0 or result.health_days_synced > 0:
+            settings = await db.get(Settings, 1)
+            if not settings:
+                settings = Settings(id=1)
+                db.add(settings)
+            settings.last_garmin_sync = datetime.now(timezone.utc)
+            await db.commit()
+        else:
+            await db.commit()
 
+    except GarminRateLimitError as e:
+        logger.error(f"Garmin sync aborted (rate limit): {e}")
+        result.errors.append(str(e))
+        # Save partial progress so next sync doesn't re-fetch already-synced data
+        try:
+            if result.activities_synced > 0 or result.health_days_synced > 0:
+                settings = await db.get(Settings, 1)
+                if not settings:
+                    settings = Settings(id=1)
+                    db.add(settings)
+                settings.last_garmin_sync = datetime.now(timezone.utc)
+                await db.commit()
+                logger.info("Saved partial sync progress (%d activities, %d health days)",
+                           result.activities_synced, result.health_days_synced)
+        except Exception as save_err:
+            logger.error(f"Failed to save partial sync progress: {save_err}")
     except Exception as e:
         logger.error(f"Garmin sync failed: {e}")
         result.errors.append(str(e))
     finally:
         _is_syncing = False
+        # No manual token dump needed — garth auto-saves via _garth_home
 
     return result

@@ -599,46 +599,39 @@ async def run_daily_briefing_pipeline():
                 logger.info("Today's briefing already exists, skipping")
                 return
 
-            # Get credentials
-            db_settings = await db.get(DBSettings, 1)
-            garmin_email = (db_settings.garmin_email if db_settings else None) or app_settings.garmin_email
-            garmin_password = (db_settings.garmin_password if db_settings else None) or app_settings.garmin_password
-
             # 1. Sync Garmin
-            if garmin_email and garmin_password:
-                try:
-                    from app.services.garmin_sync import sync_garmin, _get_garmin_client
-                    result = await sync_garmin(db, garmin_email, garmin_password)
-                    sync_results["garmin"] = {
-                        "activities": result.activities_synced,
-                        "health_days": result.health_days_synced,
-                    }
-                    # Keep client for calendar sync and tool use
-                    garmin_client = await asyncio.to_thread(
-                        _get_garmin_client, garmin_email, garmin_password
-                    )
+            try:
+                from app.services.garmin_sync import sync_garmin, get_garmin_client
+                result = await sync_garmin(db)
+                sync_results["garmin"] = {
+                    "activities": result.activities_synced,
+                    "health_days": result.health_days_synced,
+                }
+                # Get cached singleton for calendar sync and tool use
+                garmin_client = await get_garmin_client(db)
 
-                    # Sync calendar
-                    from app.services.garmin_calendar_sync import sync_garmin_calendar
-                    cal_result = await sync_garmin_calendar(db, garmin_client)
-                    sync_results["garmin_calendar"] = {
-                        "synced": cal_result["workouts_synced"],
-                        "updated": cal_result["workouts_updated"],
-                    }
+                # Sync calendar
+                from app.services.garmin_calendar_sync import sync_garmin_calendar
+                cal_result = await sync_garmin_calendar(db, garmin_client)
+                sync_results["garmin_calendar"] = {
+                    "synced": cal_result["workouts_synced"],
+                    "updated": cal_result["workouts_updated"],
+                }
 
-                    # Auto-match
-                    from app.services.training import auto_match_workouts
-                    plans_result = await db.execute(
-                        select(TrainingPlan).where(TrainingPlan.status == "active")
-                    )
-                    for plan in plans_result.scalars().all():
-                        await auto_match_workouts(db, plan.id)
+                # Auto-match
+                from app.services.training import auto_match_workouts
+                plans_result = await db.execute(
+                    select(TrainingPlan).where(TrainingPlan.status == "active")
+                )
+                for plan in plans_result.scalars().all():
+                    await auto_match_workouts(db, plan.id)
 
-                except Exception as e:
-                    logger.error(f"Garmin sync failed: {e}")
-                    sync_results["garmin_error"] = str(e)
+            except Exception as e:
+                logger.error(f"Garmin sync failed: {e}")
+                sync_results["garmin_error"] = str(e)
 
             # 2. Sync Withings
+            db_settings = await db.get(DBSettings, 1)
             if db_settings and db_settings.withings_access_token:
                 try:
                     from app.services.withings_sync import sync_withings

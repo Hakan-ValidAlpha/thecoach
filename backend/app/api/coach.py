@@ -223,16 +223,11 @@ IMPORTANT RULES:
 
     # Get Garmin client for syncing tool actions
     garmin_client = None
-    db_settings = await db.get(DBSettings, 1)
-    garmin_email = (db_settings.garmin_email if db_settings else None) or app_settings.garmin_email
-    garmin_password = (db_settings.garmin_password if db_settings else None) or app_settings.garmin_password
-    if garmin_email and garmin_password:
-        try:
-            import asyncio
-            from app.services.garmin_sync import _get_garmin_client
-            garmin_client = await asyncio.to_thread(_get_garmin_client, garmin_email, garmin_password)
-        except Exception as e:
-            logger.warning(f"Could not get Garmin client for chat tools: {e}")
+    try:
+        from app.services.garmin_sync import get_garmin_client
+        garmin_client = await get_garmin_client(db)
+    except Exception as e:
+        logger.warning(f"Could not get Garmin client for chat tools: {e}")
 
     async def generate():
         full_response = ""

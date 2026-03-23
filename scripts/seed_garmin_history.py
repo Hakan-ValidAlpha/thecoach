@@ -19,15 +19,9 @@ async def main(days: int):
 
     print(f"Backfilling Garmin data from {start_date} to {end_date}...")
 
-    if not settings.garmin_email or not settings.garmin_password:
-        print("Error: GARMIN_EMAIL and GARMIN_PASSWORD must be set in .env")
-        return
-
     async with async_session() as db:
         result = await sync_garmin(
             db,
-            settings.garmin_email,
-            settings.garmin_password,
             start_date=start_date,
             end_date=end_date,
         )

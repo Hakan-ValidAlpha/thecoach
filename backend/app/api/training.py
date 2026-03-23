@@ -10,9 +10,7 @@ from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.config import settings as app_settings
 from app.database import get_db, async_session
-from app.models.settings import Settings as DBSettings
 from app.models.training import TrainingPlan, TrainingPhase, PlannedWorkout
 from app.schemas.training import (
     TrainingPlanCreate, TrainingPlanOut, TrainingPlanUpdate,
@@ -302,12 +300,10 @@ async def delete_workout(
         garmin_schedule_id = workout.garmin_schedule_id
 
         async def _unschedule():
-            from app.services.garmin_sync import _get_garmin_client
+            from app.services.garmin_sync import get_garmin_client
             try:
-                email, password = await _get_garmin_client_from_db()
-                if not email or not password:
-                    return
-                client = await asyncio.to_thread(_get_garmin_client, email, password)
+                async with async_session() as bg_db:
+                    client = await get_garmin_client(bg_db)
                 from types import SimpleNamespace
                 w = SimpleNamespace(
                     garmin_workout_id=garmin_workout_id,
@@ -439,28 +435,13 @@ async def get_compliance(plan_id: int, db: AsyncSession = Depends(get_db)):
 
 # --- Garmin Sync Helpers ---
 
-async def _get_garmin_client_from_db() -> tuple[str, str]:
-    """Get Garmin credentials from DB or env."""
-    async with async_session() as db:
-        db_settings = await db.get(DBSettings, 1)
-        email = (db_settings.garmin_email if db_settings else None) or app_settings.garmin_email or ""
-        password = (db_settings.garmin_password if db_settings else None) or app_settings.garmin_password or ""
-    return email, password
-
-
 async def _sync_workout_to_garmin(workout_id: int, new_date: date):
     """Background task: reschedule a workout on Garmin Connect."""
-    from app.services.garmin_sync import _get_garmin_client
+    from app.services.garmin_sync import get_garmin_client
 
     try:
-        email, password = await _get_garmin_client_from_db()
-        if not email or not password:
-            logger.warning("Garmin credentials not configured, skipping sync-back")
-            return
-
-        client = await asyncio.to_thread(_get_garmin_client, email, password)
-
         async with async_session() as db:
+            client = await get_garmin_client(db)
             workout = await db.get(PlannedWorkout, workout_id)
             if not workout or not workout.garmin_workout_id:
                 return
@@ -475,34 +456,32 @@ async def _sync_workout_to_garmin(workout_id: int, new_date: date):
         logger.error(f"Garmin sync-back error for workout {workout_id}: {e}")
 
 
-async def _run_garmin_calendar_sync(email: str, password: str):
+async def _run_garmin_calendar_sync():
     """Background task to sync Garmin calendar."""
-    from app.services.garmin_sync import _get_garmin_client
+    from app.services.garmin_sync import get_garmin_client
     from app.services.garmin_calendar_sync import sync_garmin_calendar
 
-    client = await asyncio.to_thread(_get_garmin_client, email, password)
-    async with async_session() as db:
-        await sync_garmin_calendar(db, client)
-        # Auto-match after sync
-        plans_result = await db.execute(
-            select(TrainingPlan).where(TrainingPlan.status == "active")
-        )
-        for plan in plans_result.scalars().all():
-            await auto_match_workouts(db, plan.id)
+    try:
+        logger.info("Starting Garmin calendar sync...")
+        async with async_session() as db:
+            client = await get_garmin_client(db)
+            result = await sync_garmin_calendar(db, client)
+            logger.info(f"Garmin calendar sync result: {result}")
+            # Auto-match after sync
+            plans_result = await db.execute(
+                select(TrainingPlan).where(TrainingPlan.status == "active")
+            )
+            for plan in plans_result.scalars().all():
+                await auto_match_workouts(db, plan.id)
+        logger.info("Garmin calendar sync complete")
+    except Exception as e:
+        logger.error(f"Garmin calendar sync failed: {e}", exc_info=True)
 
 
 @router.post("/sync-garmin")
 async def sync_garmin_calendar_endpoint(
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
 ):
     """Sync scheduled workouts from Garmin Connect calendar."""
-    db_settings = await db.get(DBSettings, 1)
-    email = (db_settings.garmin_email if db_settings else None) or app_settings.garmin_email or ""
-    password = (db_settings.garmin_password if db_settings else None) or app_settings.garmin_password or ""
-
-    if not email or not password:
-        raise HTTPException(status_code=400, detail="Garmin credentials not configured")
-
-    background_tasks.add_task(_run_garmin_calendar_sync, email, password)
+    background_tasks.add_task(_run_garmin_calendar_sync)
     return {"status": "sync started"}
