@@ -66,7 +66,9 @@ export default function TrainingPage() {
     api.getTrainingPlans("active").then((p) => {
       setPlans(p);
       if (p.length > 0) {
-        setActivePlan(p[0]);
+        // Prefer the plan with the most workouts
+        const best = p.reduce((a, b) => (b.workout_count ?? 0) > (a.workout_count ?? 0) ? b : a, p[0]);
+        setActivePlan(best);
       }
       setLoading(false);
     }).catch(() => setLoading(false));

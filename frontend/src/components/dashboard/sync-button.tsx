@@ -24,7 +24,11 @@ export function SyncButton({ onSyncComplete }: { onSyncComplete?: () => void }) 
 
     try {
       const garmin = await api.syncGarmin();
-      results.push(`Garmin: ${garmin.activities_synced} activities, ${garmin.health_days_synced} health`);
+      if (garmin.errors && garmin.errors.length > 0) {
+        results.push(`Garmin: ${garmin.errors[0]}`);
+      } else {
+        results.push(`Garmin: ${garmin.activities_synced} activities, ${garmin.health_days_synced} health`);
+      }
     } catch (err) {
       results.push(`Garmin: ${err instanceof Error ? err.message : "failed"}`);
     }
