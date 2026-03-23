@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 # Module-level sync state
 _is_syncing = False
 _rate_limit_until: datetime | None = None  # Cooldown after 429
-_RATE_LIMIT_COOLDOWN = timedelta(minutes=30)
+_rate_limit_consecutive: int = 0  # Consecutive 429 hits for exponential backoff
+_BASE_COOLDOWN_MINUTES = 60  # Garmin SSO rate limits last 1-2 hours
 
 # Singleton Garmin client + lock
 _garmin_client: Garmin | None = None
@@ -41,7 +42,7 @@ class GarminRateLimitError(Exception):
 
 def _check_rate_limit_cooldown():
     """Check if we're in a rate limit cooldown period. Never deletes tokens."""
-    global _rate_limit_until
+    global _rate_limit_until, _rate_limit_consecutive
     if _rate_limit_until and datetime.now(timezone.utc) < _rate_limit_until:
         remaining = (_rate_limit_until - datetime.now(timezone.utc)).seconds // 60
         raise GarminRateLimitError(
@@ -53,10 +54,27 @@ def _check_rate_limit_cooldown():
 
 
 def _set_rate_limit_cooldown():
-    """Set a cooldown period after hitting a rate limit. Never deletes tokens."""
-    global _rate_limit_until
-    _rate_limit_until = datetime.now(timezone.utc) + _RATE_LIMIT_COOLDOWN
-    logger.warning("Rate limit cooldown set until %s", _rate_limit_until)
+    """Set a cooldown period after hitting a rate limit. Never deletes tokens.
+
+    Uses exponential backoff: 60 min, 120 min, 240 min (capped).
+    Consecutive counter resets on a successful API call.
+    """
+    global _rate_limit_until, _rate_limit_consecutive
+    _rate_limit_consecutive += 1
+    cooldown_minutes = min(_BASE_COOLDOWN_MINUTES * (2 ** (_rate_limit_consecutive - 1)), 240)
+    _rate_limit_until = datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
+    logger.warning(
+        "Rate limit cooldown set for %d min (attempt #%d) until %s",
+        cooldown_minutes, _rate_limit_consecutive, _rate_limit_until,
+    )
+
+
+def _reset_rate_limit_counter():
+    """Reset consecutive rate limit counter after a successful API call."""
+    global _rate_limit_consecutive
+    if _rate_limit_consecutive > 0:
+        logger.info("Rate limit counter reset (was %d)", _rate_limit_consecutive)
+        _rate_limit_consecutive = 0
 
 
 async def get_garmin_client(db: AsyncSession) -> Garmin:
@@ -394,6 +412,8 @@ async def sync_garmin(
                     end_date.isoformat(),
                 )
 
+            # First API call succeeded — reset backoff counter
+            _reset_rate_limit_counter()
             await asyncio.sleep(1)
 
             for raw in activities:
