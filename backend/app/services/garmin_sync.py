@@ -96,7 +96,15 @@ async def get_garmin_client(db: AsyncSession) -> Garmin:
             # Set _garth_home BEFORE login — enables garth's built-in auto-save
             # on every OAuth2 refresh, so we never need manual dump() calls
             client.garth._garth_home = _TOKEN_DIR
-            client.login(tokenstore=token_dir)
+
+            # Try loading existing tokens first; if missing/corrupt, do fresh login
+            try:
+                client.login(tokenstore=token_dir)
+            except FileNotFoundError:
+                logger.info("No cached tokens in %s, doing fresh login", token_dir)
+                client.login()
+                client.garth.dump(token_dir)
+
             logger.info(
                 "Garmin client initialized, display_name=%s, token_dir=%s",
                 client.display_name, token_dir,
