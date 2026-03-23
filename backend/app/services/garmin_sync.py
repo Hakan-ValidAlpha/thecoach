@@ -110,16 +110,38 @@ async def get_garmin_client(db: AsyncSession) -> Garmin:
 
         def _init_client() -> Garmin:
             client = Garmin(email, password)
+            # Enable garth auto-save on every token refresh
+            client.garth._garth_home = _TOKEN_DIR
 
-            # login(tokenstore=...) loads tokens if present, else does fresh login
-            client.login(tokenstore=token_dir)
+            # Try loading existing tokens first (no SSO call needed)
+            try:
+                client.garth.load(token_dir)
+                if client.garth.profile:
+                    client.display_name = client.garth.profile.get("displayName")
+                logger.info(
+                    "Garmin client loaded from cached tokens, display_name=%s",
+                    client.display_name,
+                )
+                return client
+            except Exception as e:
+                logger.warning("Token load failed (%s), attempting SSO login", e)
 
-            # Ensure tokens are saved for reuse across restarts
-            client.client.dump(token_dir)
+            # Fallback: SSO login (works from residential IPs, blocked on cloud)
+            try:
+                client.login()
+                client.garth.dump(token_dir)
+            except Exception as e:
+                if "429" in str(e):
+                    raise
+                raise ValueError(
+                    f"Garmin login failed: {e}. "
+                    "If running on a cloud server, upload tokens from a local "
+                    "machine via Settings > Manual Token Upload."
+                )
 
             logger.info(
-                "Garmin client initialized, display_name=%s, token_dir=%s",
-                client.display_name, token_dir,
+                "Garmin client initialized via SSO, display_name=%s",
+                client.display_name,
             )
             return client
 
@@ -150,11 +172,11 @@ async def invalidate_garmin_client():
 
 
 async def refresh_garmin_session():
-    """Proactive background session keep-alive.
+    """Proactive background refresh of OAuth2 token.
 
-    Called by APScheduler every 50 minutes. With the new JWT-based auth
-    there's no OAuth2 exchange, but we save tokens periodically and
-    verify the session is still valid.
+    Called by APScheduler every 50 minutes to keep tokens fresh
+    so syncs never need to trigger an SSO login.
+    garth auto-saves via _garth_home after each refresh.
     """
     global _garmin_client
     if _garmin_client is None:
@@ -165,12 +187,45 @@ async def refresh_garmin_session():
         return
 
     try:
-        # Save current tokens to disk
-        token_dir = str(_TOKEN_DIR)
-        await asyncio.to_thread(_garmin_client.client.dump, token_dir)
-        logger.info("Garmin session tokens saved")
+        await asyncio.to_thread(_garmin_client.garth.refresh_oauth2)
+        logger.info("Proactive OAuth2 refresh successful")
     except Exception as e:
-        logger.warning("Garmin session save failed: %s", e)
+        logger.warning("OAuth2 refresh failed: %s", e)
+
+
+async def load_garmin_tokens(token_data: str) -> str:
+    """Load pre-authenticated Garmin tokens and set as singleton.
+
+    Used when the server can't login directly (cloud IP blocked by Garmin).
+    Tokens are generated locally with garth.dumps() and uploaded via the API.
+
+    Returns display_name on success.
+    """
+    global _garmin_client, _rate_limit_until, _rate_limit_consecutive
+
+    token_dir = str(_TOKEN_DIR)
+    _TOKEN_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _init_from_tokens() -> Garmin:
+        client = Garmin()
+        client.garth._garth_home = _TOKEN_DIR
+        # garth.loads() accepts base64 encoded token data
+        client.garth.loads(token_data)
+        if client.garth.profile:
+            client.display_name = client.garth.profile.get("displayName")
+        # Persist to disk for reuse across restarts
+        client.garth.dump(token_dir)
+        return client
+
+    async with _client_lock:
+        new_client = await asyncio.to_thread(_init_from_tokens)
+        _garmin_client = new_client
+        # Clear any rate limit state — tokens came from a clean IP
+        _rate_limit_until = None
+        _rate_limit_consecutive = 0
+
+    logger.info("Garmin tokens loaded from upload, display_name=%s", new_client.display_name)
+    return new_client.display_name or "Unknown"
 
 
 def _extract_activity(raw: dict) -> dict:

@@ -414,6 +414,12 @@ export const api = {
 
   syncGarmin: () => fetchApi<SyncResult>("/sync/garmin", { method: "POST" }),
 
+  uploadGarminTokens: (tokenData: string) =>
+    fetchApi<{ status: string; display_name: string }>("/sync/garmin-tokens", {
+      method: "POST",
+      body: JSON.stringify({ token_data: tokenData }),
+    }),
+
   getSyncStatus: () => fetchApi<SyncStatus>("/sync/status"),
 
   getWithingsStatus: () => fetchApi<{ connected: boolean; last_sync: string | null }>("/withings/status"),

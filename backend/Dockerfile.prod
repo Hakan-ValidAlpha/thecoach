@@ -1,8 +1,5 @@
 FROM python:3.12-slim
 
-# git is required for installing garminconnect from GitHub branch
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 # Install uv

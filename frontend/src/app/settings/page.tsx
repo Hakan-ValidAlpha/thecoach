@@ -25,6 +25,8 @@ export default function SettingsPage() {
   const [heightCm, setHeightCm] = useState("");
   const [garminEmail, setGarminEmail] = useState("");
   const [garminPassword, setGarminPassword] = useState("");
+  const [garminTokenData, setGarminTokenData] = useState("");
+  const [uploadingTokens, setUploadingTokens] = useState(false);
   const [withingsClientId, setWithingsClientId] = useState("");
   const [withingsClientSecret, setWithingsClientSecret] = useState("");
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
@@ -307,6 +309,42 @@ export default function SettingsPage() {
                 {saving ? "Saving..." : "Save"}
               </Button>
             </form>
+
+            <div className="border-t border-border pt-4 mt-4">
+              <p className="text-sm font-medium mb-1">Manual Token Upload</p>
+              <p className="text-xs text-muted-foreground mb-3">
+                If Garmin blocks the server IP, generate tokens locally and paste them here.
+                Run: <code className="bg-muted px-1 rounded">python scripts/upload_garmin_tokens.py --dump</code>
+              </p>
+              <textarea
+                value={garminTokenData}
+                onChange={(e) => setGarminTokenData(e.target.value)}
+                placeholder='Paste token JSON here (output of upload_garmin_tokens.py --dump)'
+                rows={3}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-2"
+                disabled={uploadingTokens || !garminTokenData.trim()}
+                onClick={async () => {
+                  setUploadingTokens(true);
+                  setMessage(null);
+                  try {
+                    const result = await api.uploadGarminTokens(garminTokenData.trim());
+                    setMessage({ type: "success", text: `Garmin tokens loaded! Display name: ${result.display_name}` });
+                    setGarminTokenData("");
+                  } catch (err) {
+                    setMessage({ type: "error", text: err instanceof Error ? err.message : "Token upload failed" });
+                  } finally {
+                    setUploadingTokens(false);
+                  }
+                }}
+              >
+                {uploadingTokens ? "Uploading..." : "Upload Tokens"}
+              </Button>
+            </div>
           </CardContent>
         </Card>
 

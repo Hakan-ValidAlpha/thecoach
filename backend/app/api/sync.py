@@ -1,12 +1,12 @@
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.settings import Settings
-from app.schemas.sync import BackfillRequest, SyncResult, SyncStatusResponse
-from app.services.garmin_sync import is_syncing, sync_garmin
+from app.schemas.sync import BackfillRequest, GarminTokenUpload, SyncResult, SyncStatusResponse
+from app.services.garmin_sync import is_syncing, sync_garmin, load_garmin_tokens
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -50,6 +50,21 @@ async def backfill_garmin(
 
     background_tasks.add_task(_run_backfill)
     return SyncResult()
+
+
+@router.post("/garmin-tokens")
+async def upload_garmin_tokens(body: GarminTokenUpload):
+    """Upload pre-authenticated Garmin tokens generated from a local machine.
+
+    Use this when the server's IP is blocked by Garmin's rate limiter.
+    Generate tokens locally with: scripts/upload_garmin_tokens.py
+    """
+    try:
+        display_name = await load_garmin_tokens(body.token_data)
+        return {"status": "ok", "display_name": display_name}
+    except Exception as e:
+        logger.error("Failed to load Garmin tokens: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/status", response_model=SyncStatusResponse)

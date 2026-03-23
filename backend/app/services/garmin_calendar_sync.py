@@ -14,24 +14,6 @@ from app.models.training import TrainingPlan, PlannedWorkout
 logger = logging.getLogger(__name__)
 
 
-def _garmin_api(client: Garmin, path: str, method: str = "GET", **kwargs):
-    """Call Garmin Connect API with any HTTP method.
-
-    The new garminconnect react branch's connectapi() is GET-only.
-    For POST/DELETE/PUT we go through the inner client directly.
-    """
-    if method == "GET":
-        return client.connectapi(path, **kwargs)
-    resp = client.client.request(method, "connectapi", path, **kwargs)
-    # Return parsed JSON for consistency with connectapi()
-    if hasattr(resp, "json"):
-        try:
-            return resp.json()
-        except Exception:
-            return None
-    return resp
-
-
 def _parse_workout_type(title: str) -> str:
     """Infer workout type from Garmin/Runna workout title."""
     t = title.lower()
@@ -465,8 +447,7 @@ async def create_and_schedule_garmin_workout(
 
     try:
         response = await asyncio.to_thread(
-            _garmin_api,
-            client,
+            client.connectapi,
             "/workout-service/workout",
             method="POST",
             json=workout_data,
@@ -482,8 +463,7 @@ async def create_and_schedule_garmin_workout(
 
         schedule_data = {"date": workout.scheduled_date.isoformat()}
         schedule_response = await asyncio.to_thread(
-            _garmin_api,
-            client,
+            client.connectapi,
             f"/workout-service/schedule/{garmin_workout_id}",
             method="POST",
             json=schedule_data,
@@ -581,8 +561,7 @@ async def reschedule_garmin_workout(
         # Create new schedule
         schedule_data = {"date": new_date.isoformat()}
         response = await asyncio.to_thread(
-            _garmin_api,
-            client,
+            client.connectapi,
             f"/workout-service/schedule/{workout.garmin_workout_id}",
             method="POST",
             json=schedule_data,

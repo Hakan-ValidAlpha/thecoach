@@ -17,3 +17,7 @@ class SyncResult(BaseModel):
 class BackfillRequest(BaseModel):
     start_date: date
     end_date: date
+
+
+class GarminTokenUpload(BaseModel):
+    token_data: str
