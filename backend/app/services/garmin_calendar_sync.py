@@ -14,6 +14,24 @@ from app.models.training import TrainingPlan, PlannedWorkout
 logger = logging.getLogger(__name__)
 
 
+def _garmin_api(client: Garmin, path: str, method: str = "GET", **kwargs):
+    """Call Garmin Connect API with any HTTP method.
+
+    The new garminconnect react branch's connectapi() is GET-only.
+    For POST/DELETE/PUT we go through the inner client directly.
+    """
+    if method == "GET":
+        return client.connectapi(path, **kwargs)
+    resp = client.client.request(method, "connectapi", path, **kwargs)
+    # Return parsed JSON for consistency with connectapi()
+    if hasattr(resp, "json"):
+        try:
+            return resp.json()
+        except Exception:
+            return None
+    return resp
+
+
 def _parse_workout_type(title: str) -> str:
     """Infer workout type from Garmin/Runna workout title."""
     t = title.lower()
@@ -64,6 +82,7 @@ def _fetch_calendar_workouts(client: Garmin, months_ahead: int = 3) -> list[dict
             cal = client.connectapi(f"/calendar-service/year/{year}/month/{month}")
             items = cal.get("calendarItems", [])
             workout_items = [i for i in items if i.get("itemType") == "workout"]
+            logger.info(f"Calendar {year}/{month}: {len(workout_items)} workouts found")
             all_workouts.extend(workout_items)
         except Exception as e:
             logger.warning(f"Failed to fetch calendar for {year}/{month}: {e}")
@@ -84,7 +103,7 @@ async def sync_garmin_calendar(
         if not cal_workouts:
             return result
 
-        # Get or create a "Garmin Calendar" plan
+        # Get existing "Garmin Calendar" plan (if any)
         stmt = select(TrainingPlan).where(
             and_(
                 TrainingPlan.name == "Garmin Calendar",
@@ -93,22 +112,6 @@ async def sync_garmin_calendar(
         )
         plan_result = await db.execute(stmt)
         plan = plan_result.scalar_one_or_none()
-
-        if not plan:
-            # Determine date range from workouts
-            dates = [w["date"] for w in cal_workouts]
-            min_date = min(dates)
-            max_date = max(dates)
-
-            plan = TrainingPlan(
-                name="Garmin Calendar",
-                goal="Synced from Garmin Connect",
-                start_date=date.fromisoformat(min_date),
-                end_date=date.fromisoformat(max_date),
-                status="active",
-            )
-            db.add(plan)
-            await db.flush()
 
         # Dedup across ALL plans (not just this one) — prevents reimporting
         # workouts that already exist in coach-created plans
@@ -153,6 +156,19 @@ async def sync_garmin_calendar(
                     result["workouts_updated"] += 1
                 continue
 
+            # Create "Garmin Calendar" plan on first new workout (lazy)
+            if not plan:
+                dates = [w["date"] for w in cal_workouts]
+                plan = TrainingPlan(
+                    name="Garmin Calendar",
+                    goal="Synced from Garmin Connect",
+                    start_date=date.fromisoformat(min(dates)),
+                    end_date=date.fromisoformat(max(dates)),
+                    status="active",
+                )
+                db.add(plan)
+                await db.flush()
+
             # Fetch workout detail for distance if available
             distance = None
             description = None
@@ -185,8 +201,15 @@ async def sync_garmin_calendar(
             db.add(workout)
             result["workouts_synced"] += 1
 
+            # Add to dedup sets so later items in the same batch don't create duplicates
+            existing_by_date_title[(w_date, w_title)] = workout
+            if w_schedule_id:
+                existing_by_schedule_id[w_schedule_id] = workout
+            if w_workout_id:
+                existing_by_workout_id_date[(w_workout_id, w_date)] = workout
+
         # Extend plan end date if needed
-        if cal_workouts:
+        if plan and cal_workouts:
             max_date = max(w["date"] for w in cal_workouts)
             if date.fromisoformat(max_date) > plan.end_date:
                 plan.end_date = date.fromisoformat(max_date)
@@ -442,7 +465,8 @@ async def create_and_schedule_garmin_workout(
 
     try:
         response = await asyncio.to_thread(
-            client.connectapi,
+            _garmin_api,
+            client,
             "/workout-service/workout",
             method="POST",
             json=workout_data,
@@ -458,7 +482,8 @@ async def create_and_schedule_garmin_workout(
 
         schedule_data = {"date": workout.scheduled_date.isoformat()}
         schedule_response = await asyncio.to_thread(
-            client.connectapi,
+            _garmin_api,
+            client,
             f"/workout-service/schedule/{garmin_workout_id}",
             method="POST",
             json=schedule_data,
@@ -491,7 +516,8 @@ async def unschedule_garmin_workout(
         if workout.garmin_schedule_id:
             try:
                 await asyncio.to_thread(
-                    client.connectapi,
+                    _garmin_api,
+                    client,
                     f"/workout-service/schedule/{workout.garmin_schedule_id}",
                     method="DELETE",
                 )
@@ -503,7 +529,8 @@ async def unschedule_garmin_workout(
         if workout.garmin_workout_id:
             try:
                 await asyncio.to_thread(
-                    client.connectapi,
+                    _garmin_api,
+                    client,
                     f"/workout-service/workout/{workout.garmin_workout_id}",
                     method="DELETE",
                 )
@@ -542,7 +569,8 @@ async def reschedule_garmin_workout(
         if workout.garmin_schedule_id:
             try:
                 await asyncio.to_thread(
-                    client.connectapi,
+                    _garmin_api,
+                    client,
                     f"/workout-service/schedule/{workout.garmin_schedule_id}",
                     method="DELETE",
                 )
@@ -553,7 +581,8 @@ async def reschedule_garmin_workout(
         # Create new schedule
         schedule_data = {"date": new_date.isoformat()}
         response = await asyncio.to_thread(
-            client.connectapi,
+            _garmin_api,
+            client,
             f"/workout-service/schedule/{workout.garmin_workout_id}",
             method="POST",
             json=schedule_data,

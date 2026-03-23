@@ -80,8 +80,7 @@ def _reset_rate_limit_counter():
 async def get_garmin_client(db: AsyncSession) -> Garmin:
     """Get or create the singleton Garmin client.
 
-    - Reuses cached client across all requests (no redundant OAuth2 exchanges)
-    - Sets garth._garth_home so garth auto-saves on every token refresh
+    - Reuses cached client across all requests (no redundant logins)
     - Uses login(tokenstore=...) which handles load-or-fresh-login internally
     """
     global _garmin_client
@@ -111,23 +110,12 @@ async def get_garmin_client(db: AsyncSession) -> Garmin:
 
         def _init_client() -> Garmin:
             client = Garmin(email, password)
-            # Set _garth_home BEFORE login — enables garth's built-in auto-save
-            # on every OAuth2 refresh, so we never need manual dump() calls
-            client.garth._garth_home = _TOKEN_DIR
-            # Remove 429 from garth's retry list — we handle rate limits ourselves.
-            # garth's default retries on 429 makes each attempt hit Garmin 4x,
-            # which extends their rate limit window.
-            client.garth.configure(
-                status_forcelist=(408, 500, 502, 503, 504),
-            )
 
-            # Try loading existing tokens first; if missing/corrupt, do fresh login
-            try:
-                client.login(tokenstore=token_dir)
-            except FileNotFoundError:
-                logger.info("No cached tokens in %s, doing fresh login", token_dir)
-                client.login()
-                client.garth.dump(token_dir)
+            # login(tokenstore=...) loads tokens if present, else does fresh login
+            client.login(tokenstore=token_dir)
+
+            # Ensure tokens are saved for reuse across restarts
+            client.client.dump(token_dir)
 
             logger.info(
                 "Garmin client initialized, display_name=%s, token_dir=%s",
@@ -161,26 +149,28 @@ async def invalidate_garmin_client():
         logger.info("Garmin singleton invalidated")
 
 
-async def refresh_garmin_oauth2():
-    """Proactive background refresh of OAuth2 token.
+async def refresh_garmin_session():
+    """Proactive background session keep-alive.
 
-    Called by APScheduler every 50 minutes to keep OAuth2 fresh
-    so syncs never need to trigger an exchange.
+    Called by APScheduler every 50 minutes. With the new JWT-based auth
+    there's no OAuth2 exchange, but we save tokens periodically and
+    verify the session is still valid.
     """
     global _garmin_client
     if _garmin_client is None:
         logger.debug("No Garmin client to refresh")
         return
     if _rate_limit_until and datetime.now(timezone.utc) < _rate_limit_until:
-        logger.debug("Skipping OAuth2 refresh — rate limit cooldown active")
+        logger.debug("Skipping session refresh — rate limit cooldown active")
         return
 
     try:
-        await asyncio.to_thread(_garmin_client.garth.refresh_oauth2)
-        logger.info("Proactive OAuth2 refresh successful")
+        # Save current tokens to disk
+        token_dir = str(_TOKEN_DIR)
+        await asyncio.to_thread(_garmin_client.client.dump, token_dir)
+        logger.info("Garmin session tokens saved")
     except Exception as e:
-        logger.warning("Proactive OAuth2 refresh failed: %s", e)
-        # Don't invalidate — the client may still work with existing tokens
+        logger.warning("Garmin session save failed: %s", e)
 
 
 def _extract_activity(raw: dict) -> dict:
@@ -645,6 +635,6 @@ async def sync_garmin(
         result.errors.append(str(e))
     finally:
         _is_syncing = False
-        # No manual token dump needed — garth auto-saves via _garth_home
+        # Tokens are auto-saved during login; no extra dump needed here
 
     return result

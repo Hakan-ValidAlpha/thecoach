@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     from app.services.daily_briefing import run_daily_briefing_pipeline
 
-    from app.services.garmin_sync import refresh_garmin_oauth2
+    from app.services.garmin_sync import refresh_garmin_session
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
@@ -32,9 +32,9 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
     scheduler.add_job(
-        refresh_garmin_oauth2,
+        refresh_garmin_session,
         IntervalTrigger(minutes=50),
-        id="garmin_oauth2_refresh",
+        id="garmin_session_refresh",
         replace_existing=True,
     )
     scheduler.start()
