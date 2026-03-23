@@ -114,6 +114,12 @@ async def get_garmin_client(db: AsyncSession) -> Garmin:
             # Set _garth_home BEFORE login — enables garth's built-in auto-save
             # on every OAuth2 refresh, so we never need manual dump() calls
             client.garth._garth_home = _TOKEN_DIR
+            # Remove 429 from garth's retry list — we handle rate limits ourselves.
+            # garth's default retries on 429 makes each attempt hit Garmin 4x,
+            # which extends their rate limit window.
+            client.garth.configure(
+                status_forcelist=(408, 500, 502, 503, 504),
+            )
 
             # Try loading existing tokens first; if missing/corrupt, do fresh login
             try:
